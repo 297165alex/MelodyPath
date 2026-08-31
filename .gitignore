@@ -1,0 +1,14 @@
+/target
+/frontend/node_modules
+/frontend/dist
+/.env
+/.env.*
+!/.env.example
+*.p8
+*.pem
+client_secret*.json
+.secrets/
+*token*.json
+*.db
+*.db-shm
+*.db-wal
