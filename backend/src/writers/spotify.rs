@@ -6,13 +6,14 @@ use crate::{
         SpotifyPlaylistSummary, Track, VersionType, WriterStatus,
     },
     normalize::{detect_version, normalize_text, token_similarity},
+    secure_store::SecureJsonStore,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rand::Rng;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -58,9 +59,11 @@ impl SpotifyConfig {
         Some(Self {
             client_id: nonempty_env("SPOTIFY_CLIENT_ID")?,
             client_secret: nonempty_env("SPOTIFY_CLIENT_SECRET")?,
-            redirect_uri: nonempty_env("SPOTIFY_REDIRECT_URI")?,
-            frontend_url: std::env::var("FRONTEND_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:5173".into()),
+            redirect_uri: nonempty_env("SPOTIFY_REDIRECT_URI")
+                .or_else(|| public_endpoint("/api/spotify/callback"))?,
+            frontend_url: nonempty_env("FRONTEND_URL")
+                .or_else(|| nonempty_env("PUBLIC_BASE_URL"))
+                .unwrap_or_else(|| "http://127.0.0.1:5173".into()),
             market: std::env::var("SPOTIFY_MARKET").unwrap_or_else(|_| "US".into()),
             accounts_authorize_url: "https://accounts.spotify.com/authorize".into(),
             accounts_token_url: "https://accounts.spotify.com/api/token".into(),
@@ -69,7 +72,16 @@ impl SpotifyConfig {
     }
 }
 
-#[derive(Clone)]
+fn public_endpoint(path: &str) -> Option<String> {
+    let base = nonempty_env("PUBLIC_BASE_URL")?;
+    let parsed = reqwest::Url::parse(&base).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return None;
+    }
+    Some(format!("{}{}", base.trim_end_matches('/'), path))
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct TokenSet {
     access_token: String,
     refresh_token: Option<String>,
@@ -102,6 +114,7 @@ pub struct SpotifyPlaylistWriter {
     client: Client,
     pending_states: Arc<RwLock<HashMap<String, u64>>>,
     sessions: Arc<RwLock<HashMap<String, TokenSet>>>,
+    session_store: Option<SecureJsonStore>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,7 +126,22 @@ struct TokenResponse {
 
 impl SpotifyPlaylistWriter {
     pub fn new() -> Self {
-        Self::from_config(SpotifyConfig::from_env(), Client::new())
+        let client = Client::builder()
+            .timeout(Duration::from_secs(12))
+            .build()
+            .unwrap_or_default();
+        let session_store = SecureJsonStore::for_oauth_provider("spotify");
+        let sessions = session_store
+            .as_ref()
+            .and_then(|store| store.load().ok())
+            .unwrap_or_default();
+        Self {
+            config: SpotifyConfig::from_env(),
+            client,
+            pending_states: Arc::new(RwLock::new(HashMap::new())),
+            sessions: Arc::new(RwLock::new(sessions)),
+            session_store,
+        }
     }
 
     fn from_config(config: Option<SpotifyConfig>, client: Client) -> Self {
@@ -122,6 +150,28 @@ impl SpotifyPlaylistWriter {
             client,
             pending_states: Arc::new(RwLock::new(HashMap::new())),
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            session_store: None,
+        }
+    }
+
+    pub fn frontend_url(&self) -> String {
+        self.config
+            .as_ref()
+            .map(|config| config.frontend_url.clone())
+            .unwrap_or_else(|| {
+                std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://127.0.0.1:5173".into())
+            })
+    }
+
+    async fn persist_sessions(&self) -> Result<()> {
+        let Some(store) = &self.session_store else {
+            return Ok(());
+        };
+        let sessions = self.sessions.read().await;
+        if sessions.is_empty() {
+            store.remove()
+        } else {
+            store.save(&*sessions)
         }
     }
 
@@ -259,7 +309,12 @@ impl SpotifyPlaylistWriter {
                 user_id: None,
                 display_name: None,
                 avatar_url: None,
-                message: "OAuth 已配置，请在 Spotify 官方页面授权。".into(),
+                message: if auth_session.is_some() {
+                    "Spotify 连接已失效，请重新连接。"
+                } else {
+                    "OAuth 已配置，请在 Spotify 官方页面授权。"
+                }
+                .into(),
                 policy_notice: SPOTIFY_POLICY_NOTICE.into(),
             },
         }
@@ -269,7 +324,11 @@ impl SpotifyPlaylistWriter {
         let Some(session) = auth_session else {
             return false;
         };
-        self.sessions.write().await.remove(session).is_some()
+        let removed = self.sessions.write().await.remove(session).is_some();
+        if removed {
+            let _ = self.persist_sessions().await;
+        }
+        removed
     }
 
     pub async fn list_playlists(
@@ -551,6 +610,7 @@ impl SpotifyPlaylistWriter {
                 avatar_url,
             },
         );
+        self.persist_sessions().await?;
         Ok((session, config.frontend_url.clone()))
     }
 
@@ -602,6 +662,7 @@ impl SpotifyPlaylistWriter {
             .write()
             .await
             .insert(session.to_string(), refreshed.clone());
+        self.persist_sessions().await?;
         Ok(refreshed)
     }
 
@@ -691,6 +752,9 @@ impl SpotifyPlaylistWriter {
             title,
             artists,
             album,
+            duration_ms: duration,
+            channel_name: None,
+            official_status: "spotify_catalog".into(),
             target_url: item
                 .pointer("/external_urls/spotify")
                 .and_then(Value::as_str)

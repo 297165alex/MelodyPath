@@ -1,10 +1,15 @@
 use crate::{
     genre::{canonicalize_genre, genre_distance, genre_key, normalize_genres},
+    identity::{
+        artist_identity_keys, canonical_artist_name, normalized_track_key, primary_artist_key,
+        same_recording,
+    },
     models::{
         Playlist, Recommendation, RecommendationQueryStats, RecommendationSeed,
-        RecommendationSummary, RecommendationZoneSummary, RouteStep, TasteReport, Track,
+        RecommendationSummary, RecommendationZoneSummary, RouteStep, TagCandidateTelemetry,
+        TasteReport, Track,
     },
-    normalize::{detect_version, normalize_text},
+    normalize::{detect_version, is_alternate_version, normalize_text},
 };
 use async_trait::async_trait;
 use reqwest::Client;
@@ -52,6 +57,8 @@ pub enum CandidateRelation {
     CoreTagTopTrack,
     AdjacentTagTopTrack,
     DistantTagTopTrack,
+    GenreBridgeTopTrack,
+    SecondHopSimilarArtist,
 }
 
 #[derive(Debug, Clone)]
@@ -90,7 +97,7 @@ pub struct RecommendationProfile {
 }
 
 impl RecommendationProfile {
-    fn from_report(report: &TasteReport) -> Self {
+    pub fn from_report(report: &TasteReport) -> Self {
         Self {
             core_genres: report.core_preferences.clone(),
             adjacent_genres: report.adjacent_preferences.clone(),
@@ -161,6 +168,7 @@ impl LastFmRecommendationProvider {
         method: &str,
         params: Vec<(String, String)>,
         budget: Arc<AtomicUsize>,
+        retries: Arc<AtomicUsize>,
     ) -> Result<Value, RecommendationProviderError> {
         let Some(api_key) = self.api_key.as_deref() else {
             return Err(RecommendationProviderError("未配置Last.fm推荐服务".into()));
@@ -178,12 +186,14 @@ impl LastFmRecommendationProvider {
             return Ok(cached);
         }
 
+        // The budget counts logical API requests. A retry belongs to the same request and must
+        // not starve the later tag exploration path.
+        if budget.fetch_add(1, Ordering::Relaxed) >= LASTFM_MAX_REQUESTS {
+            return Err(RecommendationProviderError(
+                "已达到本次 Last.fm 请求数量上限".into(),
+            ));
+        }
         for attempt in 0..=1 {
-            if budget.fetch_add(1, Ordering::Relaxed) >= LASTFM_MAX_REQUESTS {
-                return Err(RecommendationProviderError(
-                    "已达到本次 Last.fm 请求数量上限".into(),
-                ));
-            }
             let _permit = self
                 .concurrency
                 .acquire()
@@ -217,7 +227,10 @@ impl LastFmRecommendationProvider {
             .await;
             let response = match response {
                 Ok(Ok(response)) => response,
-                _ if attempt == 0 => continue,
+                _ if attempt == 0 => {
+                    retries.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
                 _ => {
                     return Err(RecommendationProviderError(
                         "Last.fm 请求超时或网络不可用".into(),
@@ -227,6 +240,7 @@ impl LastFmRecommendationProvider {
             let status = response.status();
             if !status.is_success() {
                 if attempt == 0 && (status.as_u16() == 429 || status.is_server_error()) {
+                    retries.fetch_add(1, Ordering::Relaxed);
                     sleep(Duration::from_millis(250)).await;
                     continue;
                 }
@@ -237,7 +251,10 @@ impl LastFmRecommendationProvider {
             }
             let body = match response.json::<Value>().await {
                 Ok(body) => body,
-                Err(_) if attempt == 0 => continue,
+                Err(_) if attempt == 0 => {
+                    retries.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
                 Err(_) => {
                     return Err(RecommendationProviderError(
                         "Last.fm 返回了无法解析的响应".into(),
@@ -259,6 +276,7 @@ impl LastFmRecommendationProvider {
         &self,
         seed: RecommendationSeed,
         budget: Arc<AtomicUsize>,
+        retries: Arc<AtomicUsize>,
     ) -> SeedQueryResult {
         let artist = seed.artists.first().cloned().unwrap_or_default();
         let common = vec![
@@ -268,9 +286,16 @@ impl LastFmRecommendationProvider {
         let mut similar_params = common.clone();
         similar_params.push(("limit".into(), LASTFM_TRACK_SIMILAR_LIMIT.to_string()));
         let similar = self
-            .request_json("track.getSimilar", similar_params, budget.clone())
+            .request_json(
+                "track.getSimilar",
+                similar_params,
+                budget.clone(),
+                retries.clone(),
+            )
             .await;
-        let tags = self.request_json("track.getTopTags", common, budget).await;
+        let tags = self
+            .request_json("track.getTopTags", common, budget, retries)
+            .await;
         SeedQueryResult {
             seed,
             similar,
@@ -298,13 +323,16 @@ impl RecommendationProvider for LastFmRecommendationProvider {
             return Err(RecommendationProviderError("未配置Last.fm推荐服务".into()));
         }
         let budget = Arc::new(AtomicUsize::new(0));
+        let retries = Arc::new(AtomicUsize::new(0));
         let mut result = RecommendationProviderResult::default();
         let mut seed_tags = Vec::new();
         let mut seed_tasks = JoinSet::new();
         for seed in seeds.iter().cloned() {
             let provider = self.clone();
             let task_budget = budget.clone();
-            seed_tasks.spawn(async move { provider.seed_queries(seed, task_budget).await });
+            let task_retries = retries.clone();
+            seed_tasks
+                .spawn(async move { provider.seed_queries(seed, task_budget, task_retries).await });
         }
         while let Some(joined) = seed_tasks.join_next().await {
             let Ok(seed_result) = joined else {
@@ -350,6 +378,7 @@ impl RecommendationProvider for LastFmRecommendationProvider {
         for artist in main_artists {
             let provider = self.clone();
             let task_budget = budget.clone();
+            let task_retries = retries.clone();
             artist_tasks.spawn(async move {
                 let response = provider
                     .request_json(
@@ -359,6 +388,7 @@ impl RecommendationProvider for LastFmRecommendationProvider {
                             ("limit".into(), "8".into()),
                         ],
                         task_budget,
+                        task_retries,
                     )
                     .await;
                 (artist, response)
@@ -386,9 +416,10 @@ impl RecommendationProvider for LastFmRecommendationProvider {
         similar_artists.truncate(8);
 
         let mut top_track_tasks = JoinSet::new();
-        for similar_artist in similar_artists {
+        for similar_artist in similar_artists.iter().cloned() {
             let provider = self.clone();
             let task_budget = budget.clone();
+            let task_retries = retries.clone();
             top_track_tasks.spawn(async move {
                 let response = provider
                     .request_json(
@@ -398,6 +429,7 @@ impl RecommendationProvider for LastFmRecommendationProvider {
                             ("limit".into(), "5".into()),
                         ],
                         task_budget,
+                        task_retries,
                     )
                     .await;
                 (similar_artist, response)
@@ -411,9 +443,102 @@ impl RecommendationProvider for LastFmRecommendationProvider {
             match response {
                 Ok(value) => {
                     result.successful_requests += 1;
-                    result
-                        .candidates
-                        .extend(parse_artist_top_tracks(&value, &similar_artist));
+                    let candidates = parse_artist_top_tracks(
+                        &value,
+                        &similar_artist,
+                        CandidateRelation::SimilarArtistTopTrack,
+                    );
+                    result.stats.raw_artist_top_tracks_count += candidates.len();
+                    result.candidates.extend(candidates);
+                }
+                Err(_) => result.failed_requests += 1,
+            }
+        }
+
+        // A second artist hop is a controlled-serendipity source: it is still anchored to a
+        // real seed artist, but sufficiently novel to qualify for the surprise pool.
+        let first_hop_for_second: Vec<_> = similar_artists.iter().take(2).cloned().collect();
+        let mut second_artist_tasks = JoinSet::new();
+        for first_hop in first_hop_for_second {
+            let provider = self.clone();
+            let task_budget = budget.clone();
+            let task_retries = retries.clone();
+            second_artist_tasks.spawn(async move {
+                let response = provider
+                    .request_json(
+                        "artist.getSimilar",
+                        vec![
+                            ("artist".into(), first_hop.name.clone()),
+                            ("limit".into(), "3".into()),
+                        ],
+                        task_budget,
+                        task_retries,
+                    )
+                    .await;
+                (first_hop, response)
+            });
+        }
+        let mut second_hop_artists = Vec::new();
+        while let Some(joined) = second_artist_tasks.join_next().await {
+            let Ok((first_hop, response)) = joined else {
+                result.failed_requests += 1;
+                continue;
+            };
+            match response {
+                Ok(value) => {
+                    result.successful_requests += 1;
+                    let parsed = parse_similar_artists(&value, &first_hop.name)
+                        .into_iter()
+                        .map(|mut artist| {
+                            artist.seed_artist =
+                                format!("{} → {}", first_hop.seed_artist, first_hop.name);
+                            artist.similarity *= first_hop.similarity;
+                            artist
+                        });
+                    second_hop_artists.extend(parsed);
+                }
+                Err(_) => result.failed_requests += 1,
+            }
+        }
+        second_hop_artists.sort_by(|left, right| right.similarity.total_cmp(&left.similarity));
+        second_hop_artists
+            .dedup_by(|left, right| normalize_text(&left.name) == normalize_text(&right.name));
+        second_hop_artists.truncate(3);
+        let mut second_top_track_tasks = JoinSet::new();
+        for artist in second_hop_artists {
+            let provider = self.clone();
+            let task_budget = budget.clone();
+            let task_retries = retries.clone();
+            second_top_track_tasks.spawn(async move {
+                let response = provider
+                    .request_json(
+                        "artist.getTopTracks",
+                        vec![
+                            ("artist".into(), artist.name.clone()),
+                            ("limit".into(), "4".into()),
+                        ],
+                        task_budget,
+                        task_retries,
+                    )
+                    .await;
+                (artist, response)
+            });
+        }
+        while let Some(joined) = second_top_track_tasks.join_next().await {
+            let Ok((artist, response)) = joined else {
+                result.failed_requests += 1;
+                continue;
+            };
+            match response {
+                Ok(value) => {
+                    result.successful_requests += 1;
+                    let candidates = parse_artist_top_tracks(
+                        &value,
+                        &artist,
+                        CandidateRelation::SecondHopSimilarArtist,
+                    );
+                    result.stats.raw_artist_top_tracks_count += candidates.len();
+                    result.candidates.extend(candidates);
                 }
                 Err(_) => result.failed_requests += 1,
             }
@@ -421,16 +546,19 @@ impl RecommendationProvider for LastFmRecommendationProvider {
 
         let mut core_tags = ranked_profile_tags(profile, seed_tags);
         core_tags.truncate(2);
+        result.stats.core_tags = core_tags.clone();
         let mut core_tag_tasks = JoinSet::new();
         for tag in core_tags {
             let provider = self.clone();
             let task_budget = budget.clone();
+            let task_retries = retries.clone();
             core_tag_tasks.spawn(async move {
                 let top_tracks = provider
                     .request_json(
                         "tag.getTopTracks",
                         vec![("tag".into(), tag.clone()), ("limit".into(), "10".into())],
                         task_budget.clone(),
+                        task_retries.clone(),
                     )
                     .await;
                 let similar = provider
@@ -438,6 +566,7 @@ impl RecommendationProvider for LastFmRecommendationProvider {
                         "tag.getSimilar",
                         vec![("tag".into(), tag.clone())],
                         task_budget,
+                        task_retries,
                     )
                     .await;
                 (tag, top_tracks, similar)
@@ -467,27 +596,30 @@ impl RecommendationProvider for LastFmRecommendationProvider {
             match similar {
                 Ok(value) => {
                     result.successful_requests += 1;
-                    adjacent_tags.extend(
-                        parse_tags(&value, "/similartags/tag")
-                            .into_iter()
-                            .take(2)
-                            .map(|tag| TagPath {
-                                root: root_tag.clone(),
-                                previous: root_tag.clone(),
-                                tag,
-                            }),
-                    );
+                    result.stats.tag_similar_success_count += 1;
+                    let parsed = parse_tags(&value, "/similartags/tag");
+                    result.stats.similar_tag_count += parsed.len();
+                    adjacent_tags.extend(parsed.into_iter().take(2).map(|tag| TagPath {
+                        root: root_tag.clone(),
+                        previous: root_tag.clone(),
+                        tag,
+                    }));
                 }
-                Err(_) => result.failed_requests += 1,
+                Err(_) => {
+                    result.failed_requests += 1;
+                    result.stats.tag_similar_failure_count += 1;
+                }
             }
         }
         dedupe_tag_paths(&mut adjacent_tags);
         adjacent_tags.truncate(4);
+        result.stats.layer1_tags = adjacent_tags.iter().map(|path| path.tag.clone()).collect();
 
         let mut adjacent_tasks = JoinSet::new();
         for path in adjacent_tags {
             let provider = self.clone();
             let task_budget = budget.clone();
+            let task_retries = retries.clone();
             adjacent_tasks.spawn(async move {
                 let top_tracks = provider
                     .request_json(
@@ -497,6 +629,7 @@ impl RecommendationProvider for LastFmRecommendationProvider {
                             ("limit".into(), "10".into()),
                         ],
                         task_budget.clone(),
+                        task_retries.clone(),
                     )
                     .await;
                 let similar = provider
@@ -504,6 +637,7 @@ impl RecommendationProvider for LastFmRecommendationProvider {
                         "tag.getSimilar",
                         vec![("tag".into(), path.tag.clone())],
                         task_budget,
+                        task_retries,
                     )
                     .await;
                 (path, top_tracks, similar)
@@ -526,6 +660,16 @@ impl RecommendationProvider for LastFmRecommendationProvider {
                         2,
                     );
                     result.stats.raw_tag_top_tracks_count += candidates.len();
+                    result.stats.tag_layer1_candidate_count += candidates.len();
+                    result
+                        .stats
+                        .tag_top_track_counts
+                        .push(TagCandidateTelemetry {
+                            tag: path.tag.clone(),
+                            layer: 1,
+                            candidate_count: candidates.len(),
+                            source: "tag.getSimilar depth 1".into(),
+                        });
                     result.candidates.extend(candidates);
                 }
                 Err(_) => result.failed_requests += 1,
@@ -533,8 +677,11 @@ impl RecommendationProvider for LastFmRecommendationProvider {
             match similar {
                 Ok(value) => {
                     result.successful_requests += 1;
+                    result.stats.tag_similar_success_count += 1;
+                    let parsed = parse_tags(&value, "/similartags/tag");
+                    result.stats.similar_tag_count += parsed.len();
                     distant_tags.extend(
-                        parse_tags(&value, "/similartags/tag")
+                        parsed
                             .into_iter()
                             .filter(|tag| normalize_text(tag) != normalize_text(&path.root))
                             .take(1)
@@ -545,15 +692,37 @@ impl RecommendationProvider for LastFmRecommendationProvider {
                             }),
                     );
                 }
-                Err(_) => result.failed_requests += 1,
+                Err(_) => {
+                    result.failed_requests += 1;
+                    result.stats.tag_similar_failure_count += 1;
+                }
             }
         }
         dedupe_tag_paths(&mut distant_tags);
         distant_tags.truncate(2);
+        let mut relation = CandidateRelation::DistantTagTopTrack;
+        if distant_tags.is_empty() {
+            relation = CandidateRelation::GenreBridgeTopTrack;
+            distant_tags.extend(profile.exploration_genres.iter().take(2).map(|tag| {
+                TagPath {
+                    root: profile
+                        .core_genres
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "core preference".into()),
+                    previous: "Genre Graph two-hop bridge".into(),
+                    tag: tag.clone(),
+                }
+            }));
+            dedupe_tag_paths(&mut distant_tags);
+        }
+        result.stats.layer2_tags = distant_tags.iter().map(|path| path.tag.clone()).collect();
         let mut distant_tasks = JoinSet::new();
         for path in distant_tags {
             let provider = self.clone();
             let task_budget = budget.clone();
+            let task_retries = retries.clone();
+            let task_relation = relation.clone();
             distant_tasks.spawn(async move {
                 let response = provider
                     .request_json(
@@ -563,13 +732,14 @@ impl RecommendationProvider for LastFmRecommendationProvider {
                             ("limit".into(), "10".into()),
                         ],
                         task_budget,
+                        task_retries,
                     )
                     .await;
-                (path, response)
+                (path, task_relation, response)
             });
         }
         while let Some(joined) = distant_tasks.join_next().await {
-            let Ok((path, response)) = joined else {
+            let Ok((path, candidate_relation, response)) = joined else {
                 result.failed_requests += 1;
                 continue;
             };
@@ -580,15 +750,44 @@ impl RecommendationProvider for LastFmRecommendationProvider {
                         &value,
                         &path.tag,
                         &format!("{} → {}", path.root, path.previous),
-                        CandidateRelation::DistantTagTopTrack,
+                        candidate_relation.clone(),
                         2,
                     );
                     result.stats.raw_tag_top_tracks_count += candidates.len();
+                    result.stats.tag_layer2_candidate_count += candidates.len();
+                    result
+                        .stats
+                        .tag_top_track_counts
+                        .push(TagCandidateTelemetry {
+                            tag: path.tag.clone(),
+                            layer: 2,
+                            candidate_count: candidates.len(),
+                            source: if candidate_relation == CandidateRelation::GenreBridgeTopTrack
+                            {
+                                "Genre Graph two-hop → tag.getTopTracks".into()
+                            } else {
+                                "tag.getSimilar depth 2".into()
+                            },
+                        });
                     result.candidates.extend(candidates);
                 }
                 Err(_) => result.failed_requests += 1,
             }
         }
+        let requests = budget.load(Ordering::Relaxed);
+        result.stats.request_budget_used_count = requests.min(LASTFM_MAX_REQUESTS);
+        result.stats.request_budget_exhausted_count = requests.saturating_sub(LASTFM_MAX_REQUESTS);
+        result.stats.retry_count = retries.load(Ordering::Relaxed);
+        result.stats.genre_bridge_candidate_count = result
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.relation == CandidateRelation::GenreBridgeTopTrack)
+            .count();
+        result.stats.second_hop_artist_candidate_count = result
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.relation == CandidateRelation::SecondHopSimilarArtist)
+            .count();
         result.stats.raw_candidate_count = result.candidates.len();
         Ok(result)
     }
@@ -636,43 +835,53 @@ pub async fn build_real_recommendations(
         }
     };
 
-    let source_mbid: HashSet<_> = playlist
-        .tracks
-        .iter()
-        .filter_map(|track| track.external_ids.get("mbid"))
-        .map(|mbid| normalize_text(mbid))
+    let successful_requests = provider_result.successful_requests;
+    let failed_requests = provider_result.failed_requests;
+    let mut stats = provider_result.stats;
+    let raw_candidates = provider_result.candidates;
+    stats.raw_candidate_count = raw_candidates.len();
+    let version_filtered: Vec<_> = raw_candidates
+        .into_iter()
+        .filter(|candidate| !is_alternate_version(&detect_version(&candidate.track.title)))
         .collect();
-    let source_keys: HashSet<_> = playlist.tracks.iter().map(track_version_key).collect();
+    stats.after_version_filter_count = version_filtered.len();
+
+    let normalized: Vec<_> = version_filtered
+        .into_iter()
+        .map(|mut candidate| {
+            candidate.track.normalized_title = normalize_text(&candidate.track.title);
+            candidate.track.version_type = detect_version(&candidate.track.title);
+            candidate
+        })
+        .collect();
+    stats.after_normalization_count = normalized.len();
+
     let mut seen = HashSet::new();
-    let mut filtered = Vec::new();
-    for candidate in provider_result.candidates {
-        let mbid_key = candidate
-            .mbid
-            .as_deref()
-            .map(normalize_text)
-            .filter(|value| !value.is_empty());
-        if mbid_key
-            .as_ref()
-            .is_some_and(|mbid| source_mbid.contains(mbid))
-            || source_keys.contains(&track_version_key(&candidate.track))
-        {
-            continue;
-        }
-        let key = mbid_key
-            .map(|mbid| format!("mbid:{mbid}"))
-            .unwrap_or_else(|| format!("track:{}", track_version_key(&candidate.track)));
+    let mut deduplicated = Vec::new();
+    for candidate in normalized {
+        let key = normalized_track_key(&candidate.track);
         if seen.insert(key) {
-            filtered.push(candidate);
+            deduplicated.push(candidate);
         }
     }
-    let mut stats = provider_result.stats;
+    stats.after_deduplication_count = deduplicated.len();
+
+    let filtered: Vec<_> = deduplicated
+        .into_iter()
+        .filter(|candidate| {
+            !playlist
+                .tracks
+                .iter()
+                .any(|source| same_recording(source, &candidate.track))
+        })
+        .collect();
+    stats.after_source_exclusion_count = filtered.len();
     stats.deduplicated_candidate_count = filtered.len();
     let average_energy = average_real_energy(playlist);
     let source_artists: HashSet<_> = playlist
         .tracks
         .iter()
-        .flat_map(|track| track.artists.iter())
-        .map(|artist| normalize_text(artist))
+        .flat_map(artist_identity_keys)
         .collect();
     let profile_tags = profile_tag_keys(&profile);
     let seed_rank: HashMap<_, _> = seeds
@@ -700,10 +909,51 @@ pub async fn build_real_recommendations(
             .then_with(|| left.relaxation_level.cmp(&right.relaxation_level))
             .then_with(|| right.match_score.total_cmp(&left.match_score))
     });
-    let recommendations = take_zone_limits(evaluated);
-    let status = if recommendations.is_empty() && provider_result.successful_requests == 0 {
+    let artist_limited = apply_artist_cap(evaluated);
+    stats.after_artist_cap_count = artist_limited.len();
+    let comfort_pool: Vec<_> = artist_limited
+        .iter()
+        .filter(|item| item.zone == "舒适区")
+        .cloned()
+        .collect();
+    let expansion_pool: Vec<_> = artist_limited
+        .iter()
+        .filter(|item| item.zone == "拓展区")
+        .cloned()
+        .collect();
+    let surprise_pool: Vec<_> = artist_limited
+        .iter()
+        .filter(|item| item.zone == "惊喜区")
+        .cloned()
+        .collect();
+    stats.comfort_candidate_count = comfort_pool.len();
+    stats.expansion_candidate_count = expansion_pool.len();
+    stats.surprise_candidate_count = surprise_pool.len();
+    let retained_tag_layer1 = artist_limited
+        .iter()
+        .filter(|item| {
+            item.source_endpoint.contains("tag.getTopTracks")
+                && item.source_endpoint.contains("depth 1")
+        })
+        .count();
+    let retained_tag_layer2 = artist_limited
+        .iter()
+        .filter(|item| {
+            item.source_endpoint.contains("tag.getTopTracks")
+                && (item.source_endpoint.contains("depth 2")
+                    || item.source_endpoint.contains("Genre Graph two-hop"))
+        })
+        .count();
+    stats.tag_layer1_rejected_count = stats
+        .tag_layer1_candidate_count
+        .saturating_sub(retained_tag_layer1);
+    stats.tag_layer2_rejected_count = stats
+        .tag_layer2_candidate_count
+        .saturating_sub(retained_tag_layer2);
+    let recommendations = take_zone_limits(artist_limited);
+    let status = if recommendations.is_empty() && successful_requests == 0 {
         "unavailable"
-    } else if provider_result.failed_requests > 0 {
+    } else if failed_requests > 0 {
         "partial"
     } else if recommendations.is_empty() {
         "no_candidates"
@@ -718,9 +968,12 @@ pub async fn build_real_recommendations(
         ),
         "no_candidates" => "Last.fm 的渐进式候选步骤均已耗尽，没有可安全展示的候选。".into(),
         _ => format!(
-            "Last.fm 生成 {} 首原始候选，去重并排除原歌单后保留 {} 首，最终展示 {} 首。",
+            "Last.fm 生成 {} 首原始候选，版本过滤后 {} 首，规范化去重后 {} 首，排除原歌单后 {} 首，艺术家上限后 {} 首，最终展示 {} 首。",
             stats.raw_candidate_count,
-            stats.deduplicated_candidate_count,
+            stats.after_version_filter_count,
+            stats.after_deduplication_count,
+            stats.after_source_exclusion_count,
+            stats.after_artist_cap_count,
             recommendations.len()
         ),
     };
@@ -732,6 +985,9 @@ pub async fn build_real_recommendations(
         zones: zone_summaries(&recommendations, status, provider.source_label()),
         seeds,
         query_stats: stats,
+        comfort_pool,
+        expansion_pool,
+        surprise_pool,
     };
     let route = build_route(report, &recommendations);
     (recommendations, summary, route)
@@ -744,7 +1000,7 @@ pub fn select_recommendation_seeds(
     let artist_counts: HashMap<_, _> = report
         .artist_distribution
         .iter()
-        .map(|(artist, count)| (normalize_text(artist), *count))
+        .map(|(artist, count)| (canonical_artist_name(artist), *count))
         .collect();
     let genre_counts: HashMap<_, _> = report
         .genre_distribution
@@ -767,7 +1023,7 @@ pub fn select_recommendation_seeds(
             let artist = track
                 .artists
                 .first()
-                .map(|artist| normalize_text(artist))
+                .map(|artist| canonical_artist_name(artist))
                 .unwrap_or_default();
             let artist_score = artist_counts.get(&artist).copied().unwrap_or_default() as f32;
             let genre_score = track
@@ -798,10 +1054,10 @@ pub fn select_recommendation_seeds(
         let artist_keys: Vec<_> = track
             .artists
             .iter()
-            .map(|artist| normalize_text(artist))
+            .map(|artist| canonical_artist_name(artist))
             .filter(|artist| !artist.is_empty())
             .collect();
-        let track_key = track_version_key(track);
+        let track_key = normalized_track_key(track);
         if selected.len() >= MAX_SEEDS
             || artist_keys
                 .iter()
@@ -834,7 +1090,7 @@ pub fn select_recommendation_seeds(
             track
                 .artists
                 .iter()
-                .any(|artist| normalize_text(artist) == normalize_text(main_artist))
+                .any(|artist| canonical_artist_name(artist) == canonical_artist_name(main_artist))
         }) {
             add_track(track);
         }
@@ -909,7 +1165,9 @@ fn evaluate_candidate(
         CandidateRelation::SimilarArtistTopTrack | CandidateRelation::AdjacentTagTopTrack => {
             "拓展区"
         }
-        CandidateRelation::DistantTagTopTrack => "惊喜区",
+        CandidateRelation::DistantTagTopTrack
+        | CandidateRelation::GenreBridgeTopTrack
+        | CandidateRelation::SecondHopSimilarArtist => "惊喜区",
     };
     let overlap = candidate
         .tags
@@ -926,12 +1184,10 @@ fn evaluate_candidate(
                 .map(move |core| genre_distance(core, genre))
         })
         .min();
-    let artist_is_new = candidate
-        .track
-        .artists
-        .first()
-        .map(|artist| !source_artists.contains(&normalize_text(artist)))
-        .unwrap_or(false);
+    let candidate_artists = artist_identity_keys(&candidate.track);
+    let artist_is_new = !candidate_artists
+        .iter()
+        .any(|artist| source_artists.contains(artist));
     let seed_position = RecommendationSeed {
         title: candidate.seed_track.clone().unwrap_or_default(),
         artists: candidate
@@ -959,6 +1215,8 @@ fn evaluate_candidate(
         CandidateRelation::CoreTagTopTrack => 0.58,
         CandidateRelation::AdjacentTagTopTrack => 0.64,
         CandidateRelation::DistantTagTopTrack => 0.62,
+        CandidateRelation::GenreBridgeTopTrack => 0.6,
+        CandidateRelation::SecondHopSimilarArtist => similarity.max(0.48),
     };
     let novelty = if artist_is_new { 1.0 } else { 0.25 };
     let mut score = match zone {
@@ -990,6 +1248,14 @@ fn evaluate_candidate(
         CandidateRelation::CoreTagTopTrack => "用户核心标签的真实热门曲目".into(),
         CandidateRelation::AdjacentTagTopTrack => "核心标签的第一层相邻标签曲目".into(),
         CandidateRelation::DistantTagTopTrack => "核心标签的第二层相邻标签曲目".into(),
+        CandidateRelation::GenreBridgeTopTrack => format!(
+            "Genre Graph 两跳桥梁，仍连接核心偏好 {}",
+            candidate.seed_artist.as_deref().unwrap_or("核心 Genre")
+        ),
+        CandidateRelation::SecondHopSimilarArtist => format!(
+            "第二层相似艺术家网络，桥梁路径为 {}",
+            candidate.seed_artist.as_deref().unwrap_or("歌单主要艺术家")
+        ),
     };
     let expansion = format!(
         "Last.fm {} · 渐进式第 {} 级",
@@ -1004,6 +1270,7 @@ fn evaluate_candidate(
     }
     track.genres = candidate.normalized_genres.clone();
     track.mood_tags = candidate.tags.clone();
+    let ui_confidence = (candidate.confidence * 0.72 + score * 0.28).clamp(0.0, 0.99);
     Recommendation {
         track,
         zone: zone.into(),
@@ -1017,35 +1284,28 @@ fn evaluate_candidate(
             _ => 0.88,
         },
         candidate_source: candidate.source_provider,
-        match_confidence: candidate.confidence,
+        match_confidence: ui_confidence,
         source_endpoint: candidate.source_endpoint,
         seed_track: candidate.seed_track,
         seed_artist: candidate.seed_artist,
         lastfm_similarity: candidate.lastfm_similarity,
         tags: candidate.tags,
         relaxation_level: candidate.relaxation_level,
+        already_in_source_playlist: false,
     }
 }
 
-fn take_zone_limits(items: Vec<Recommendation>) -> Vec<Recommendation> {
+fn apply_artist_cap(items: Vec<Recommendation>) -> Vec<Recommendation> {
     let mut result: Vec<Recommendation> = Vec::new();
     let mut used = HashSet::new();
     for zone in ["舒适区", "拓展区", "惊喜区"] {
         let mut artist_counts: HashMap<String, usize> = HashMap::new();
         for item in items.iter().filter(|item| item.zone == zone) {
-            if result.iter().filter(|item| item.zone == zone).count() >= TARGET_PER_ZONE {
-                break;
-            }
             let key = recommendation_identity(item);
             if !used.insert(key) {
                 continue;
             }
-            let artist = item
-                .track
-                .artists
-                .first()
-                .map(|artist| normalize_text(artist))
-                .unwrap_or_default();
+            let artist = primary_artist_key(&item.track);
             if artist_counts.get(&artist).copied().unwrap_or_default() >= MAX_PER_ARTIST_PER_ZONE {
                 continue;
             }
@@ -1054,6 +1314,47 @@ fn take_zone_limits(items: Vec<Recommendation>) -> Vec<Recommendation> {
         }
     }
     result
+}
+
+fn take_zone_limits(items: Vec<Recommendation>) -> Vec<Recommendation> {
+    let mut result = Vec::new();
+    for zone in ["舒适区", "拓展区", "惊喜区"] {
+        result.extend(
+            items
+                .iter()
+                .filter(|item| item.zone == zone)
+                .take(TARGET_PER_ZONE)
+                .cloned(),
+        );
+    }
+    result
+}
+
+#[derive(Debug, Clone)]
+pub struct RecommendationBatch {
+    pub items: Vec<Recommendation>,
+    pub exhausted: bool,
+}
+
+/// Returns the next non-overlapping page from an already-fetched pool. It never calls a provider.
+pub fn next_recommendation_batch(
+    pool: &[Recommendation],
+    already_shown: &[String],
+    batch_size: usize,
+) -> RecommendationBatch {
+    let shown: HashSet<_> = already_shown.iter().cloned().collect();
+    let items: Vec<_> = pool
+        .iter()
+        .filter(|item| !shown.contains(&recommendation_identity(item)))
+        .take(batch_size)
+        .cloned()
+        .collect();
+    let returned: HashSet<_> = items.iter().map(recommendation_identity).collect();
+    let exhausted = pool.iter().all(|item| {
+        let id = recommendation_identity(item);
+        shown.contains(&id) || returned.contains(&id)
+    });
+    RecommendationBatch { items, exhausted }
 }
 
 fn zone_summaries(
@@ -1109,6 +1410,9 @@ fn empty_summary(
         zones: zone_summaries(&[], status, source),
         seeds,
         query_stats,
+        comfort_pool: Vec::new(),
+        expansion_pool: Vec::new(),
+        surprise_pool: Vec::new(),
     }
 }
 
@@ -1211,6 +1515,7 @@ fn parse_similar_artists(value: &Value, seed_artist: &str) -> Vec<SimilarArtist>
 fn parse_artist_top_tracks(
     value: &Value,
     similar_artist: &SimilarArtist,
+    relation: CandidateRelation,
 ) -> Vec<RecommendationCandidate> {
     value
         .pointer("/toptracks/track")
@@ -1221,13 +1526,17 @@ fn parse_artist_top_tracks(
             candidate_from_track_value(
                 item,
                 Vec::new(),
-                CandidateRelation::SimilarArtistTopTrack,
-                "artist.getSimilar → artist.getTopTracks",
+                relation.clone(),
+                if relation == CandidateRelation::SecondHopSimilarArtist {
+                    "artist.getSimilar depth 2 → artist.getTopTracks"
+                } else {
+                    "artist.getSimilar → artist.getTopTracks"
+                },
                 Some(similar_artist.seed_artist.clone()),
                 None,
                 Some(similar_artist.similarity),
                 format!(
-                    "{} 是 {} 的 Last.fm 相似艺术家代表曲",
+                    "{} 是 {} 的 Last.fm 相似艺术家网络代表曲",
                     similar_artist.name, similar_artist.seed_artist
                 ),
                 similar_artist.similarity.max(0.5),
@@ -1262,6 +1571,9 @@ fn parse_tag_top_tracks(
                     CandidateRelation::CoreTagTopTrack => "tag.getTopTracks (core tag)",
                     CandidateRelation::AdjacentTagTopTrack => {
                         "tag.getSimilar depth 1 → tag.getTopTracks"
+                    }
+                    CandidateRelation::GenreBridgeTopTrack => {
+                        "Genre Graph two-hop → tag.getTopTracks"
                     }
                     _ => "tag.getSimilar depth 2 → tag.getTopTracks",
                 },
@@ -1414,49 +1726,12 @@ fn seed_key(seed: &RecommendationSeed) -> String {
     format!(
         "{}|{}",
         normalize_text(&seed.title),
-        normalize_text(seed.artists.first().map(String::as_str).unwrap_or_default())
-    )
-}
-
-fn base_title(title: &str) -> String {
-    let normalized = normalize_text(title);
-    let mut end = normalized.len();
-    for marker in [
-        " live",
-        " remaster",
-        " remix",
-        " acoustic",
-        " instrumental",
-        " radio edit",
-        " version",
-    ] {
-        if let Some(index) = normalized.find(marker) {
-            end = end.min(index);
-        }
-    }
-    normalized[..end].trim().to_string()
-}
-
-fn track_version_key(track: &Track) -> String {
-    format!(
-        "{}|{}",
-        base_title(&track.title),
-        normalize_text(
-            track
-                .artists
-                .first()
-                .map(String::as_str)
-                .unwrap_or_default()
-        )
+        canonical_artist_name(seed.artists.first().map(String::as_str).unwrap_or_default())
     )
 }
 
 fn recommendation_identity(item: &Recommendation) -> String {
-    item.track
-        .external_ids
-        .get("mbid")
-        .map(|mbid| format!("mbid:{}", normalize_text(mbid)))
-        .unwrap_or_else(|| track_version_key(&item.track))
+    normalized_track_key(&item.track)
 }
 
 fn zone_rank(zone: &str) -> u8 {
@@ -1573,6 +1848,19 @@ mod tests {
     }
 
     fn provider(candidates: Vec<RecommendationCandidate>) -> MockLastFmProvider {
+        let tag_layer1_candidate_count = candidates
+            .iter()
+            .filter(|candidate| candidate.relation == CandidateRelation::AdjacentTagTopTrack)
+            .count();
+        let tag_layer2_candidate_count = candidates
+            .iter()
+            .filter(|candidate| {
+                matches!(
+                    candidate.relation,
+                    CandidateRelation::DistantTagTopTrack | CandidateRelation::GenreBridgeTopTrack
+                )
+            })
+            .count();
         MockLastFmProvider {
             configured: true,
             fail: false,
@@ -1601,6 +1889,8 @@ mod tests {
                         })
                         .count(),
                     raw_candidate_count: candidates.len(),
+                    tag_layer1_candidate_count,
+                    tag_layer2_candidate_count,
                     ..Default::default()
                 },
                 candidates,
@@ -1673,6 +1963,41 @@ mod tests {
         )]);
         let (items, _, _) = build_real_recommendations(&provider, &playlist, &report).await;
         assert_eq!(items[0].zone, "惊喜区");
+    }
+
+    #[tokio::test]
+    async fn genre_graph_bridge_fallback_enters_surprise_without_random_data() {
+        let playlist = playlist();
+        let report = engine::analyze_playlist(&playlist);
+        let provider = provider(vec![candidate(
+            "Sweet Life",
+            "Frank Ocean",
+            CandidateRelation::GenreBridgeTopTrack,
+            "Genre Graph two-hop → tag.getTopTracks",
+            None,
+            &["Neo Soul"],
+        )]);
+        let (items, summary, _) = build_real_recommendations(&provider, &playlist, &report).await;
+        assert_eq!(items[0].zone, "惊喜区");
+        assert!(items[0].source_endpoint.contains("Genre Graph"));
+        assert!(!summary.source_label.to_lowercase().contains("demo"));
+    }
+
+    #[tokio::test]
+    async fn second_hop_artist_is_controlled_surprise() {
+        let playlist = playlist();
+        let report = engine::analyze_playlist(&playlist);
+        let provider = provider(vec![candidate(
+            "Garden Song",
+            "Phoebe Bridgers",
+            CandidateRelation::SecondHopSimilarArtist,
+            "artist.getSimilar depth 2 → artist.getTopTracks",
+            Some(0.48),
+            &["Singer/Songwriter"],
+        )]);
+        let (items, _, _) = build_real_recommendations(&provider, &playlist, &report).await;
+        assert_eq!(items[0].zone, "惊喜区");
+        assert!(items[0].connection.contains("第二层相似艺术家"));
     }
 
     #[tokio::test]
@@ -1819,5 +2144,271 @@ mod tests {
         let (items, _, _) = build_real_recommendations(&provider, &playlist, &report).await;
         assert_eq!(items[0].track.energy_score, None);
         assert!(items[0].match_score > 0.0);
+    }
+
+    #[tokio::test]
+    async fn source_original_excludes_known_derived_versions() {
+        let playlist = Playlist {
+            id: "versions".into(),
+            name: "Version sources".into(),
+            owner_label: "test".into(),
+            source: "REAL_FILE".into(),
+            is_demo: false,
+            tracks: vec![
+                track("Dancin", "Aaron Smith", "Pop", None),
+                track("Bang Bang", "Jessie J", "Pop", None),
+            ],
+        };
+        let report = engine::analyze_playlist(&playlist);
+        let provider = provider(vec![
+            candidate(
+                "Dancin - Krono Remix",
+                "Aaron Smith",
+                CandidateRelation::TrackSimilar,
+                "track.getSimilar",
+                Some(0.92),
+                &["Pop"],
+            ),
+            candidate(
+                "Bang Bang (Bonus Track)",
+                "Jessie J",
+                CandidateRelation::TrackSimilar,
+                "track.getSimilar",
+                Some(0.91),
+                &["Pop"],
+            ),
+        ]);
+        let (items, summary, _) = build_real_recommendations(&provider, &playlist, &report).await;
+        assert!(items.is_empty());
+        assert_eq!(summary.query_stats.raw_candidate_count, 2);
+        assert_eq!(summary.query_stats.after_version_filter_count, 0);
+    }
+
+    #[tokio::test]
+    async fn explicit_remix_source_keeps_original_version_semantics_distinct() {
+        let playlist = Playlist {
+            id: "remix-source".into(),
+            name: "Remix source".into(),
+            owner_label: "test".into(),
+            source: "REAL_FILE".into(),
+            is_demo: false,
+            tracks: vec![track("Dancin - Krono Remix", "Aaron Smith", "Pop", None)],
+        };
+        let report = engine::analyze_playlist(&playlist);
+        let provider = provider(vec![candidate(
+            "Dancin",
+            "Aaron Smith",
+            CandidateRelation::TrackSimilar,
+            "track.getSimilar",
+            Some(0.9),
+            &["Pop"],
+        )]);
+        let (items, _, _) = build_real_recommendations(&provider, &playlist, &report).await;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].track.title, "Dancin");
+    }
+
+    #[tokio::test]
+    async fn source_aliases_are_excluded_from_real_recommendations() {
+        let playlist = Playlist {
+            id: "aliases".into(),
+            name: "Alias sources".into(),
+            owner_label: "test".into(),
+            source: "REAL_FILE".into(),
+            is_demo: false,
+            tracks: vec![
+                track("晴天", "Jay Chou", "Mandopop", None),
+                track("背對背擁抱", "JJ Lin", "Mandopop", None),
+            ],
+        };
+        let report = engine::analyze_playlist(&playlist);
+        let provider = provider(vec![
+            candidate(
+                "晴天",
+                "周杰倫",
+                CandidateRelation::TrackSimilar,
+                "track.getSimilar",
+                Some(0.9),
+                &["Mandopop"],
+            ),
+            candidate(
+                "背對背擁抱",
+                "林俊傑",
+                CandidateRelation::TrackSimilar,
+                "track.getSimilar",
+                Some(0.88),
+                &["Mandopop"],
+            ),
+        ]);
+        let (items, summary, _) = build_real_recommendations(&provider, &playlist, &report).await;
+        assert!(items.is_empty());
+        assert_eq!(summary.query_stats.after_source_exclusion_count, 0);
+    }
+
+    #[tokio::test]
+    async fn pipeline_statistics_record_each_filter_stage() {
+        let playlist = playlist();
+        let report = engine::analyze_playlist(&playlist);
+        let provider = provider(vec![
+            candidate(
+                "About You - Live",
+                "The 1975",
+                CandidateRelation::TrackSimilar,
+                "track.getSimilar",
+                Some(0.9),
+                &["Pop"],
+            ),
+            candidate(
+                "Levitating",
+                "Dua Lipa",
+                CandidateRelation::TrackSimilar,
+                "track.getSimilar",
+                Some(0.9),
+                &["Pop"],
+            ),
+            candidate(
+                "Cut to the Feeling",
+                "Carly Rae Jepsen",
+                CandidateRelation::TrackSimilar,
+                "track.getSimilar",
+                Some(0.88),
+                &["Pop"],
+            ),
+            candidate(
+                "Cut to the Feeling",
+                "Carly Rae Jepsen",
+                CandidateRelation::TrackSimilar,
+                "track.getSimilar",
+                Some(0.87),
+                &["Pop"],
+            ),
+            candidate(
+                "Emotion",
+                "Carly Rae Jepsen",
+                CandidateRelation::TrackSimilar,
+                "track.getSimilar",
+                Some(0.86),
+                &["Pop"],
+            ),
+            candidate(
+                "Julien",
+                "Carly Rae Jepsen",
+                CandidateRelation::TrackSimilar,
+                "track.getSimilar",
+                Some(0.85),
+                &["Pop"],
+            ),
+            candidate(
+                "Surrender",
+                "Carly Rae Jepsen",
+                CandidateRelation::TrackSimilar,
+                "track.getSimilar",
+                Some(0.84),
+                &["Pop"],
+            ),
+        ]);
+        let (items, summary, _) = build_real_recommendations(&provider, &playlist, &report).await;
+        let stats = summary.query_stats;
+        assert_eq!(stats.raw_candidate_count, 7);
+        assert_eq!(stats.after_version_filter_count, 6);
+        assert_eq!(stats.after_normalization_count, 6);
+        assert_eq!(stats.after_deduplication_count, 5);
+        assert_eq!(stats.after_source_exclusion_count, 4);
+        assert_eq!(stats.after_artist_cap_count, 2);
+        assert_eq!(stats.comfort_candidate_count, 2);
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|item| !item.already_in_source_playlist));
+    }
+
+    #[tokio::test]
+    async fn tag_layer_statistics_separate_fetched_and_rejected_counts() {
+        let playlist = playlist();
+        let report = engine::analyze_playlist(&playlist);
+        let provider = provider(vec![
+            candidate(
+                "Layer One",
+                "Artist One",
+                CandidateRelation::AdjacentTagTopTrack,
+                "tag.getSimilar depth 1 → tag.getTopTracks",
+                None,
+                &["Indie Pop"],
+            ),
+            candidate(
+                "Layer Two",
+                "Artist Two",
+                CandidateRelation::DistantTagTopTrack,
+                "tag.getSimilar depth 2 → tag.getTopTracks",
+                None,
+                &["Dream Pop"],
+            ),
+            candidate(
+                "Layer Two Live",
+                "Artist Three",
+                CandidateRelation::DistantTagTopTrack,
+                "tag.getSimilar depth 2 → tag.getTopTracks",
+                None,
+                &["Dream Pop"],
+            ),
+            candidate(
+                "Second Hop Artist Track",
+                "Artist Four",
+                CandidateRelation::SecondHopSimilarArtist,
+                "artist.getSimilar depth 2 → artist.getTopTracks",
+                Some(0.9),
+                &["Dream Pop"],
+            ),
+            candidate(
+                "Genre Graph Bridge Track",
+                "Artist Five",
+                CandidateRelation::GenreBridgeTopTrack,
+                "Genre Graph two-hop → tag.getTopTracks",
+                None,
+                &["Neo Soul"],
+            ),
+        ]);
+        let (_, summary, _) = build_real_recommendations(&provider, &playlist, &report).await;
+        let stats = summary.query_stats;
+        assert_eq!(stats.tag_layer1_candidate_count, 1);
+        assert_eq!(stats.tag_layer2_candidate_count, 3);
+        assert_eq!(stats.tag_layer1_rejected_count, 0);
+        assert_eq!(stats.tag_layer2_rejected_count, 1);
+    }
+
+    #[tokio::test]
+    async fn recommendation_batches_do_not_overlap_and_report_exhaustion() {
+        let playlist = playlist();
+        let report = engine::analyze_playlist(&playlist);
+        let candidates = (0..6)
+            .map(|index| {
+                candidate(
+                    &format!("Fresh Candidate {index}"),
+                    &format!("Artist {index}"),
+                    CandidateRelation::TrackSimilar,
+                    "track.getSimilar",
+                    Some(0.8 - index as f32 * 0.02),
+                    &["Pop"],
+                )
+            })
+            .collect();
+        let (_, summary, _) =
+            build_real_recommendations(&provider(candidates), &playlist, &report).await;
+        let first = next_recommendation_batch(&summary.comfort_pool, &[], 4);
+        let shown: Vec<_> = first.items.iter().map(recommendation_identity).collect();
+        let second = next_recommendation_batch(&summary.comfort_pool, &shown, 4);
+        let first_ids: HashSet<_> = shown.into_iter().collect();
+        assert!(
+            second
+                .items
+                .iter()
+                .all(|item| !first_ids.contains(&recommendation_identity(item)))
+        );
+        assert!(second.exhausted);
+        let all_shown: Vec<_> = summary
+            .comfort_pool
+            .iter()
+            .map(recommendation_identity)
+            .collect();
+        let empty = next_recommendation_batch(&summary.comfort_pool, &all_shown, 4);
+        assert!(empty.items.is_empty() && empty.exhausted);
     }
 }

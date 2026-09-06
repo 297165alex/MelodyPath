@@ -88,6 +88,7 @@ impl MetadataService {
             build_real_recommendations(self.recommendation_provider.as_ref(), &playlist, &report)
                 .await;
         PersonalDemo {
+            analysis_id: Uuid::new_v4().to_string(),
             playlist,
             report,
             recommendations,
@@ -156,6 +157,7 @@ impl MetadataService {
             .collect();
         let analyzed_count = playlist.tracks.len();
         PersonalDemo {
+            analysis_id: Uuid::new_v4().to_string(),
             playlist,
             report: report.clone(),
             recommendations,

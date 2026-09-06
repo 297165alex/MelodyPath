@@ -53,21 +53,9 @@ pub fn youtube_data_use() -> DataUseCapabilities {
 }
 
 pub fn apple_data_use() -> DataUseCapabilities {
-    DataUseCapabilities {
-        can_read_account_identity: false,
-        can_list_playlists: true,
-        can_read_playlist_items: true,
-        can_display_attributed_metadata: true,
-        can_transfer_playlist_metadata: false,
-        can_create_playlist: true,
-        can_add_items: true,
-        can_analyze_content: false,
-        can_derive_metrics: false,
-        can_cross_platform_compare: false,
-        can_send_to_llm: false,
-        can_train_model: false,
-        explanation: "MusicKit 可在用户同意后读取和管理资料库；本项目尚未完成真实账号与条款审核，分析类能力保持关闭。".into(),
-    }
+    DataUseCapabilities::unavailable(
+        "MusicKit 官方能力存在，但本项目尚未实现并真实验收账号连接；当前仅接受用户主动提供的导出文件。",
+    )
 }
 
 impl PlatformService {
@@ -96,6 +84,22 @@ impl PlatformService {
         vec![
             PlatformCapability {
                 platform: "netease".into(),
+                auth_supported: false,
+                playlist_read_supported: false,
+                playlist_write_supported: false,
+                public_link_import_supported: false,
+                file_import_supported: true,
+                compare_supported: true,
+                transfer_source_supported: true,
+                transfer_destination_supported: false,
+                copy_source_supported: true,
+                copy_destination_supported: false,
+                playlist_read_for_copy: false,
+                playlist_read_for_compare: false,
+                playlist_read_for_recommendation: false,
+                alternate_version_search_supported: false,
+                status: "IMPORT_ONLY".into(),
+                reason: "没有可验证的官方用户歌单 OAuth；请上传导出文件或粘贴歌曲清单。".into(),
                 display_name: "网易云音乐".into(),
                 region: "中国平台".into(),
                 capability_status: "qualification_required".into(),
@@ -115,6 +119,22 @@ impl PlatformService {
             },
             PlatformCapability {
                 platform: "qq_music".into(),
+                auth_supported: false,
+                playlist_read_supported: false,
+                playlist_write_supported: false,
+                public_link_import_supported: false,
+                file_import_supported: true,
+                compare_supported: true,
+                transfer_source_supported: true,
+                transfer_destination_supported: false,
+                copy_source_supported: true,
+                copy_destination_supported: false,
+                playlist_read_for_copy: false,
+                playlist_read_for_compare: false,
+                playlist_read_for_recommendation: false,
+                alternate_version_search_supported: false,
+                status: "IMPORT_ONLY".into(),
+                reason: "没有可验证的通用官方用户歌单 OAuth；请使用文件或文本导入。".into(),
                 display_name: "QQ音乐".into(),
                 region: "中国平台".into(),
                 capability_status: "qualification_required".into(),
@@ -134,6 +154,22 @@ impl PlatformService {
             },
             PlatformCapability {
                 platform: "kugou".into(),
+                auth_supported: false,
+                playlist_read_supported: false,
+                playlist_write_supported: false,
+                public_link_import_supported: false,
+                file_import_supported: true,
+                compare_supported: true,
+                transfer_source_supported: true,
+                transfer_destination_supported: false,
+                copy_source_supported: true,
+                copy_destination_supported: false,
+                playlist_read_for_copy: false,
+                playlist_read_for_compare: false,
+                playlist_read_for_recommendation: false,
+                alternate_version_search_supported: false,
+                status: "PARTNERSHIP_REQUIRED".into(),
+                reason: "开放平台不等于个人歌单 OAuth；未验证 writer 前只提供导入。".into(),
                 display_name: "酷狗音乐".into(),
                 region: "中国平台".into(),
                 capability_status: "qualification_required".into(),
@@ -153,6 +189,22 @@ impl PlatformService {
             },
             PlatformCapability {
                 platform: "kuwo".into(),
+                auth_supported: false,
+                playlist_read_supported: false,
+                playlist_write_supported: false,
+                public_link_import_supported: false,
+                file_import_supported: true,
+                compare_supported: true,
+                transfer_source_supported: true,
+                transfer_destination_supported: false,
+                copy_source_supported: true,
+                copy_destination_supported: false,
+                playlist_read_for_copy: false,
+                playlist_read_for_compare: false,
+                playlist_read_for_recommendation: false,
+                alternate_version_search_supported: false,
+                status: "IMPORT_ONLY".into(),
+                reason: "没有已验证的官方个人歌单接口；只提供文件或文本导入。".into(),
                 display_name: "酷我音乐".into(),
                 region: "中国平台".into(),
                 capability_status: "not_connected".into(),
@@ -172,6 +224,27 @@ impl PlatformService {
             },
             PlatformCapability {
                 platform: "spotify".into(),
+                auth_supported: true,
+                playlist_read_supported: true,
+                playlist_write_supported: true,
+                public_link_import_supported: false,
+                file_import_supported: true,
+                compare_supported: false,
+                transfer_source_supported: true,
+                transfer_destination_supported: true,
+                copy_source_supported: true,
+                copy_destination_supported: true,
+                playlist_read_for_copy: true,
+                playlist_read_for_compare: false,
+                playlist_read_for_recommendation: false,
+                alternate_version_search_supported: false,
+                status: if spotify_configured {
+                    "MANUAL_AUTH_REQUIRED"
+                } else {
+                    "IMPLEMENTED_BUT_UNCONFIGURED"
+                }
+                .into(),
+                reason: "官方 OAuth 能力已实现；连接与真实读写仍取决于开发者配置和用户授权。".into(),
                 display_name: "Spotify".into(),
                 region: "国际平台".into(),
                 capability_status: if spotify_configured { "official_oauth_ready" } else { "needs_configuration" }.into(),
@@ -191,25 +264,67 @@ impl PlatformService {
             },
             PlatformCapability {
                 platform: "apple_music".into(),
+                auth_supported: false,
+                playlist_read_supported: false,
+                playlist_write_supported: false,
+                public_link_import_supported: false,
+                file_import_supported: true,
+                compare_supported: true,
+                transfer_source_supported: true,
+                transfer_destination_supported: false,
+                copy_source_supported: true,
+                copy_destination_supported: false,
+                playlist_read_for_copy: false,
+                playlist_read_for_compare: false,
+                playlist_read_for_recommendation: false,
+                alternate_version_search_supported: false,
+                status: "IMPORT_ONLY".into(),
+                reason: "MusicKit 真实账号连接器尚未实现；当前仅支持用户提供的导出数据。".into(),
                 display_name: "Apple Music".into(),
                 region: "国际平台".into(),
-                capability_status: if apple_configured { "implemented_unverified" } else { "needs_configuration" }.into(),
-                status_label: if apple_configured { "已配置，尚待真实账号验收" } else { "完成配置即可使用" }.into(),
-                account_connection: "musickit_planned".into(),
+                capability_status: "import_only".into(),
+                status_label: "仅文件或文本导入".into(),
+                account_connection: "not_implemented".into(),
                 public_playlist_links: "not_implemented".into(),
                 playlist_read: "planned".into(),
                 playlist_write: "planned".into(),
                 search_links: true,
                 requires_review: true,
-                configured: apple_configured,
+                configured: false,
                 official_docs_url: Some("https://developer.apple.com/musickit/".into()),
-                action_kind: "configure".into(),
-                description: "预留 MusicKit 正式连接器；当前只提供平台搜索链接与文件导出。".into(),
+                action_kind: "import".into(),
+                description: if apple_configured {
+                    "检测到开发者配置，但账号连接器和真实验收尚未完成；当前仍只提供文件或文本导入。"
+                } else {
+                    "当前只提供文件或文本导入，不展示虚假的账号连接按钮。"
+                }
+                .into(),
                 policy_notice: None,
                 data_use: apple_data_use(),
             },
             PlatformCapability {
                 platform: "youtube_music".into(),
+                auth_supported: true,
+                playlist_read_supported: true,
+                playlist_write_supported: true,
+                public_link_import_supported: false,
+                file_import_supported: true,
+                compare_supported: false,
+                transfer_source_supported: true,
+                transfer_destination_supported: true,
+                copy_source_supported: true,
+                copy_destination_supported: true,
+                playlist_read_for_copy: true,
+                playlist_read_for_compare: false,
+                playlist_read_for_recommendation: false,
+                alternate_version_search_supported: true,
+                status: if youtube_configured {
+                    "MANUAL_AUTH_REQUIRED"
+                } else {
+                    "IMPLEMENTED_BUT_UNCONFIGURED"
+                }
+                .into(),
+                reason: "Google OAuth 与 YouTube Data API 能力已实现；真实使用取决于配置、授权与额度。".into(),
                 display_name: "YouTube Music".into(),
                 region: "国际平台".into(),
                 capability_status: if youtube_configured { "official_oauth_ready" } else { "needs_configuration" }.into(),
@@ -503,5 +618,47 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(youtube.playlist_id.as_deref(), Some("PLabc"));
+    }
+
+    #[test]
+    fn capability_matrix_never_advertises_fake_connect_or_writer() {
+        let capabilities = PlatformService::new().capabilities(false, false, false);
+        for platform in ["netease", "qq_music", "kugou", "kuwo"] {
+            let item = capabilities
+                .iter()
+                .find(|item| item.platform == platform)
+                .unwrap();
+            assert!(!item.auth_supported);
+            assert!(!item.playlist_write_supported);
+            assert!(item.file_import_supported);
+            assert!(!item.transfer_destination_supported);
+            assert!(!item.playlist_read_for_copy);
+            assert!(!item.copy_destination_supported);
+            assert!(matches!(
+                item.status.as_str(),
+                "IMPORT_ONLY" | "PARTNERSHIP_REQUIRED"
+            ));
+        }
+        let spotify = capabilities
+            .iter()
+            .find(|item| item.platform == "spotify")
+            .unwrap();
+        let youtube = capabilities
+            .iter()
+            .find(|item| item.platform == "youtube_music")
+            .unwrap();
+        assert!(spotify.auth_supported && spotify.playlist_write_supported);
+        assert!(youtube.auth_supported && youtube.playlist_write_supported);
+        assert!(spotify.playlist_read_for_copy && spotify.copy_destination_supported);
+        assert!(youtube.playlist_read_for_copy && youtube.copy_destination_supported);
+        assert!(!spotify.playlist_read_for_recommendation);
+        assert!(!youtube.playlist_read_for_compare);
+        assert!(!spotify.configured && !youtube.configured);
+        let apple = capabilities
+            .iter()
+            .find(|item| item.platform == "apple_music")
+            .unwrap();
+        assert_eq!(apple.status, "IMPORT_ONLY");
+        assert!(!apple.auth_supported && !apple.configured);
     }
 }

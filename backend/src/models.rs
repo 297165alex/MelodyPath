@@ -7,6 +7,8 @@ pub enum DataState {
     None,
     RealFile,
     RealText,
+    RealAccount,
+    RealPublicLink,
     Demo,
     Error,
 }
@@ -81,16 +83,26 @@ pub struct ImportAnalysisSummary {
     pub energy_coverage: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum VersionType {
     Original,
     Live,
+    Concert,
     Remix,
     Remastered,
     Acoustic,
+    Unplugged,
+    BonusTrack,
+    SpedUp,
+    Slowed,
+    RadioEdit,
     Cover,
     Instrumental,
+    Karaoke,
+    Reaction,
+    Nightcore,
+    Other,
     Unknown,
 }
 
@@ -159,6 +171,7 @@ pub struct Recommendation {
     pub lastfm_similarity: Option<f32>,
     pub tags: Vec<String>,
     pub relaxation_level: u8,
+    pub already_in_source_playlist: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -173,9 +186,55 @@ pub struct RecommendationQueryStats {
     pub failed_seed_count: usize,
     pub raw_track_similar_count: usize,
     pub raw_artist_similar_count: usize,
+    pub raw_artist_top_tracks_count: usize,
     pub raw_tag_top_tracks_count: usize,
     pub raw_candidate_count: usize,
+    pub after_version_filter_count: usize,
+    pub after_normalization_count: usize,
+    pub after_deduplication_count: usize,
+    pub after_source_exclusion_count: usize,
+    pub after_artist_cap_count: usize,
+    pub comfort_candidate_count: usize,
+    pub expansion_candidate_count: usize,
+    pub surprise_candidate_count: usize,
+    pub tag_layer1_candidate_count: usize,
+    pub tag_layer1_rejected_count: usize,
+    pub tag_layer2_candidate_count: usize,
+    pub tag_layer2_rejected_count: usize,
+    #[serde(default)]
+    pub core_tags: Vec<String>,
+    #[serde(default)]
+    pub tag_similar_success_count: usize,
+    #[serde(default)]
+    pub tag_similar_failure_count: usize,
+    #[serde(default)]
+    pub similar_tag_count: usize,
+    #[serde(default)]
+    pub layer1_tags: Vec<String>,
+    #[serde(default)]
+    pub layer2_tags: Vec<String>,
+    #[serde(default)]
+    pub tag_top_track_counts: Vec<TagCandidateTelemetry>,
+    #[serde(default)]
+    pub request_budget_exhausted_count: usize,
+    #[serde(default)]
+    pub request_budget_used_count: usize,
+    #[serde(default)]
+    pub retry_count: usize,
+    #[serde(default)]
+    pub genre_bridge_candidate_count: usize,
+    #[serde(default)]
+    pub second_hop_artist_candidate_count: usize,
+    /// Backward-compatible alias for `after_source_exclusion_count`.
     pub deduplicated_candidate_count: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TagCandidateTelemetry {
+    pub tag: String,
+    pub layer: u8,
+    pub candidate_count: usize,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,6 +255,12 @@ pub struct RecommendationSummary {
     pub seeds: Vec<RecommendationSeed>,
     #[serde(default)]
     pub query_stats: RecommendationQueryStats,
+    #[serde(default)]
+    pub comfort_pool: Vec<Recommendation>,
+    #[serde(default)]
+    pub expansion_pool: Vec<Recommendation>,
+    #[serde(default)]
+    pub surprise_pool: Vec<Recommendation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +297,8 @@ pub struct TasteReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersonalDemo {
+    #[serde(default)]
+    pub analysis_id: String,
     pub playlist: Playlist,
     pub report: TasteReport,
     pub recommendations: Vec<Recommendation>,
@@ -247,8 +314,20 @@ pub struct PersonalDemo {
 pub struct BridgeTrack {
     pub track: Track,
     pub reason: String,
+    #[serde(default)]
+    pub reason_for_a: String,
+    #[serde(default)]
+    pub reason_for_b: String,
+    #[serde(default)]
+    pub shared_basis: Vec<String>,
+    #[serde(default)]
+    pub candidate_source: String,
     pub phase: String,
     pub bridge_score: f32,
+    #[serde(default)]
+    pub already_in_a: bool,
+    #[serde(default)]
+    pub already_in_b: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,11 +335,208 @@ pub struct ComparisonReport {
     pub user_a: String,
     pub user_b: String,
     pub metrics: Vec<TasteMetric>,
+    pub track_count_a: usize,
+    pub track_count_b: usize,
+    pub shared_track_count: usize,
+    pub shared_artists: Vec<String>,
     pub shared_genres: Vec<String>,
     pub user_a_signatures: Vec<String>,
     pub user_b_signatures: Vec<String>,
     pub summary: String,
     pub bridge_playlist: Vec<BridgeTrack>,
+    pub is_demo: bool,
+    pub data_source: String,
+    pub saved_locally: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompareRequest {
+    pub analysis_a: PersonalDemo,
+    pub analysis_b: PersonalDemo,
+    #[serde(default)]
+    pub save_locally: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlternateVersionSearchRequest {
+    pub track: Track,
+    #[serde(default)]
+    pub version_types: Vec<VersionType>,
+    #[serde(default)]
+    pub use_mock: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlternateVersionCandidate {
+    pub title: String,
+    pub artists: Vec<String>,
+    pub platform: String,
+    pub version_type: VersionType,
+    pub duration_ms: Option<u32>,
+    pub official_status: String,
+    pub match_confidence: f32,
+    pub source_url: String,
+    pub reason: String,
+    pub is_alternate_version: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlternateVersionSearchResult {
+    pub source_track: Track,
+    pub provider: String,
+    pub status: String,
+    pub message: String,
+    pub candidates: Vec<AlternateVersionCandidate>,
+    pub is_mock: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TransferTrack {
+    pub title: String,
+    pub artists: Vec<String>,
+    pub album: Option<String>,
+    pub duration_ms: Option<u32>,
+    pub isrc: Option<String>,
+    pub source_platform: String,
+    pub source_track_id: String,
+    pub source_url: Option<String>,
+    pub normalized_title: String,
+    pub normalized_artists: Vec<String>,
+    pub version_type: VersionType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TransferCandidate {
+    pub target_id: String,
+    pub title: String,
+    pub artists: Vec<String>,
+    pub duration_ms: Option<u32>,
+    pub source_url: Option<String>,
+    pub channel_name: Option<String>,
+    pub official_status: String,
+    pub version_type: VersionType,
+    pub title_score: f32,
+    pub artist_score: f32,
+    pub duration_score: Option<f32>,
+    pub version_score: f32,
+    pub score: f32,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TransferMatchStatus {
+    MatchedHigh,
+    MatchedAmbiguous,
+    Unmatched,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferMatch {
+    pub source_track: TransferTrack,
+    pub candidates: Vec<TransferCandidate>,
+    pub selected_target_id: Option<String>,
+    pub status: TransferMatchStatus,
+    pub score: f32,
+    pub reason: String,
+    pub requires_confirmation: bool,
+    pub alternate_version_fallback: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferPreviewRequest {
+    pub playlist_name: String,
+    pub tracks: Vec<Track>,
+    #[serde(default = "default_transfer_destination")]
+    pub destination_platform: String,
+    #[serde(default)]
+    pub allow_alternate_versions: bool,
+    #[serde(default)]
+    pub use_mock: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferPreview {
+    pub preview_id: String,
+    pub playlist_name: String,
+    pub source_count: usize,
+    pub high_confidence_count: usize,
+    pub ambiguous_count: usize,
+    pub unmatched_count: usize,
+    pub alternate_fallback_count: usize,
+    pub matches: Vec<TransferMatch>,
+    pub provider: String,
+    pub destination_platform: String,
+    pub status: String,
+    pub message: String,
+    pub requires_explicit_confirmation: bool,
+    pub source_was_modified: bool,
+    pub is_mock: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferExecuteRequest {
+    pub preview_id: String,
+    pub confirmed: bool,
+    #[serde(default)]
+    pub selections: HashMap<String, String>,
+    #[serde(default = "default_private_visibility")]
+    pub privacy: String,
+}
+
+fn default_private_visibility() -> String {
+    "private".into()
+}
+
+fn default_transfer_destination() -> String {
+    "youtube".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferTrackResult {
+    pub source_track: TransferTrack,
+    pub target_id: Option<String>,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferResult {
+    pub run_id: String,
+    pub preview_id: String,
+    pub status: String,
+    pub source_count: usize,
+    pub matched_count: usize,
+    pub written_count: usize,
+    pub failed_count: usize,
+    pub skipped_count: usize,
+    pub unmatched_count: usize,
+    pub progress: f32,
+    pub playlist_id: Option<String>,
+    pub playlist_url: Option<String>,
+    pub report_csv_url: Option<String>,
+    pub report_json_url: Option<String>,
+    pub results: Vec<TransferTrackResult>,
+    pub source_was_modified: bool,
+    pub is_mock: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferRun {
+    pub id: String,
+    pub preview_id: String,
+    pub destination_platform: String,
+    pub status: String,
+    pub processed_count: usize,
+    pub source_count: usize,
+    pub progress: f32,
+    pub result: Option<TransferResult>,
+    pub error: Option<String>,
+    pub is_mock: bool,
+    pub revision: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,6 +563,9 @@ pub struct MatchCandidate {
     pub title: String,
     pub artists: Vec<String>,
     pub album: Option<String>,
+    pub duration_ms: Option<u32>,
+    pub channel_name: Option<String>,
+    pub official_status: String,
     pub target_url: Option<String>,
     pub version_type: VersionType,
     pub confidence: f32,
@@ -344,6 +623,22 @@ pub struct WriterStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformCapability {
     pub platform: String,
+    pub auth_supported: bool,
+    pub playlist_read_supported: bool,
+    pub playlist_write_supported: bool,
+    pub public_link_import_supported: bool,
+    pub file_import_supported: bool,
+    pub compare_supported: bool,
+    pub transfer_source_supported: bool,
+    pub transfer_destination_supported: bool,
+    pub copy_source_supported: bool,
+    pub copy_destination_supported: bool,
+    pub playlist_read_for_copy: bool,
+    pub playlist_read_for_compare: bool,
+    pub playlist_read_for_recommendation: bool,
+    pub alternate_version_search_supported: bool,
+    pub status: String,
+    pub reason: String,
     pub display_name: String,
     pub region: String,
     pub capability_status: String,
@@ -621,6 +916,138 @@ impl Default for AgentSettings {
 pub struct CreateAgentTaskRequest {
     pub scenario: String,
     pub goal: Option<String>,
+    #[serde(default)]
+    pub analysis_id: Option<String>,
+    #[serde(default)]
+    pub analysis_a_id: Option<String>,
+    #[serde(default)]
+    pub analysis_b_id: Option<String>,
+    #[serde(default)]
+    pub transfer_preview_id: Option<String>,
+    #[serde(default)]
+    pub use_demo: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentDecision {
+    pub action: String,
+    pub next_tool: Option<String>,
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+    pub reason: String,
+    pub finish: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AgentRunStatus {
+    Planning,
+    Running,
+    WaitingUserConfirmation,
+    BlockedExternalAuth,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl AgentRunStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Planning => "PLANNING",
+            Self::Running => "RUNNING",
+            Self::WaitingUserConfirmation => "WAITING_USER_CONFIRMATION",
+            Self::BlockedExternalAuth => "BLOCKED_EXTERNAL_AUTH",
+            Self::Completed => "COMPLETED",
+            Self::Failed => "FAILED",
+            Self::Cancelled => "CANCELLED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentIntent {
+    pub action: String,
+    pub count: Option<usize>,
+    pub novelty: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentGoal {
+    pub user_goal: String,
+    pub normalized_intent: AgentIntent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AgentStepStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentStep {
+    pub step_id: String,
+    pub label: String,
+    pub tool: String,
+    pub status: AgentStepStatus,
+    pub attempts: u32,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentPlan {
+    pub scenario: String,
+    pub steps: Vec<AgentStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentToolCall {
+    pub call_id: String,
+    pub step_id: String,
+    pub tool: String,
+    pub attempt: u32,
+    pub started_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentToolResult {
+    pub call_id: String,
+    pub success: bool,
+    pub recoverable: bool,
+    pub summary: String,
+    pub output: serde_json::Value,
+    pub completed_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentState {
+    pub status: AgentRunStatus,
+    pub current_step: usize,
+    pub completed_steps: Vec<String>,
+    pub pending_steps: Vec<String>,
+    pub retries: u32,
+    pub progress: f32,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentRun {
+    pub run_id: String,
+    pub goal: AgentGoal,
+    pub plan: AgentPlan,
+    pub state: AgentState,
+    pub tool_calls: Vec<AgentToolCall>,
+    pub tool_results: Vec<AgentToolResult>,
+    pub decision_mode: String,
+    pub decisions: Vec<AgentDecision>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub estimated_cost_usd: f64,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -633,6 +1060,23 @@ pub struct AgentTask {
     pub max_steps: i64,
     pub progress: f32,
     pub message: String,
+    pub analysis_id: Option<String>,
+    pub analysis_a_id: Option<String>,
+    pub analysis_b_id: Option<String>,
+    pub transfer_preview_id: Option<String>,
+    pub use_demo: bool,
+    pub data_state: String,
+    pub decision_mode: String,
+    pub decisions_json: String,
+    pub normalized_intent_json: String,
+    pub plan_json: String,
+    pub completed_steps_json: String,
+    pub pending_steps_json: String,
+    pub tool_calls_json: String,
+    pub tool_results_json: String,
+    pub retries: i64,
+    pub warnings_json: String,
+    pub checkpoint_json: Option<String>,
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub estimated_cost_usd: f64,

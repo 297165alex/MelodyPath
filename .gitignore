@@ -12,3 +12,7 @@ client_secret*.json
 *.db
 *.db-shm
 *.db-wal
+/testdata/*.csv
+/*.log
+/backend/*.log
+/frontend/*.log

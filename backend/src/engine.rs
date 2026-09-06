@@ -1,6 +1,7 @@
 use crate::{
     demo::catalog,
-    genre::{canonicalize_genre, exploration_genres, is_unknown_genre},
+    genre::{canonicalize_genre, exploration_genres, genre_key, is_unknown_genre},
+    identity::{artist_identity_keys, normalized_track_key, same_recording},
     models::{
         BridgeTrack, ComparisonReport, PersonalDemo, Playlist, Recommendation,
         RecommendationSummary, RecommendationZoneSummary, RouteStep, TasteMetric, TasteReport,
@@ -377,7 +378,7 @@ pub fn build_personal_demo(playlist: Playlist) -> PersonalDemo {
             "增加非线性叙事与实验结构",
         ),
     ];
-    let recommendations = recommendation_specs
+    let recommendations: Vec<Recommendation> = recommendation_specs
         .iter()
         .filter_map(
             |(title, artist, zone, score, novelty, reason, connection, expansion)| {
@@ -400,6 +401,7 @@ pub fn build_personal_demo(playlist: Playlist) -> PersonalDemo {
                         lastfm_similarity: None,
                         tags: Vec::new(),
                         relaxation_level: 0,
+                        already_in_source_playlist: false,
                     })
             },
         )
@@ -434,7 +436,23 @@ pub fn build_personal_demo(playlist: Playlist) -> PersonalDemo {
         })
         .collect();
 
+    let comfort_pool = recommendations
+        .iter()
+        .filter(|item| item.zone == "舒适区")
+        .cloned()
+        .collect();
+    let expansion_pool = recommendations
+        .iter()
+        .filter(|item| item.zone == "拓展区")
+        .cloned()
+        .collect();
+    let surprise_pool = recommendations
+        .iter()
+        .filter(|item| item.zone == "惊喜区")
+        .cloned()
+        .collect();
     PersonalDemo {
+        analysis_id: format!("demo:{}", playlist.id),
         playlist,
         report,
         recommendations,
@@ -463,6 +481,9 @@ pub fn build_personal_demo(playlist: Playlist) -> PersonalDemo {
                     message: "Demo 候选".into(),
                 },
             ],
+            comfort_pool,
+            expansion_pool,
+            surprise_pool,
         },
         import_summary: None,
         unmatched_tracks: Vec::new(),
@@ -470,100 +491,394 @@ pub fn build_personal_demo(playlist: Playlist) -> PersonalDemo {
 }
 
 pub fn compare_playlists(a: &Playlist, b: &Playlist) -> ComparisonReport {
-    let genre_set = |p: &Playlist| {
-        p.tracks
+    let mut report = comparison_metrics(a, b);
+    if a.is_demo && b.is_demo {
+        report.bridge_playlist = demo_bridge_playlist();
+    }
+    report
+}
+
+pub fn compare_analyses(a: &PersonalDemo, b: &PersonalDemo) -> ComparisonReport {
+    let mut report = comparison_metrics(&a.playlist, &b.playlist);
+    let mut candidates: HashMap<String, MutualCandidate> = HashMap::new();
+    for (recommendations, from_a) in [(&a.recommendations, true), (&b.recommendations, false)] {
+        for recommendation in recommendations {
+            if a.playlist
+                .tracks
+                .iter()
+                .chain(&b.playlist.tracks)
+                .any(|source| same_recording(source, &recommendation.track))
+            {
+                continue;
+            }
+            let key = normalized_track_key(&recommendation.track);
+            let affinity_a = if from_a {
+                recommendation.match_score
+            } else {
+                profile_affinity(&recommendation.track, &a.report, &a.playlist)
+            };
+            let affinity_b = if from_a {
+                profile_affinity(&recommendation.track, &b.report, &b.playlist)
+            } else {
+                recommendation.match_score
+            };
+            candidates
+                .entry(key)
+                .and_modify(|candidate| {
+                    candidate.score_a = candidate.score_a.max(affinity_a);
+                    candidate.score_b = candidate.score_b.max(affinity_b);
+                    if !candidate.source.contains(&recommendation.candidate_source) {
+                        candidate.source.push_str(" + ");
+                        candidate.source.push_str(&recommendation.candidate_source);
+                    }
+                })
+                .or_insert_with(|| MutualCandidate {
+                    track: recommendation.track.clone(),
+                    source: recommendation.candidate_source.clone(),
+                    score_a: affinity_a,
+                    score_b: affinity_b,
+                });
+        }
+    }
+    let mut ranked: Vec<_> = candidates
+        .into_values()
+        .filter_map(|candidate| mutual_bridge_track(candidate, &a.report, &b.report))
+        .collect();
+    ranked.sort_by(|left, right| right.bridge_score.total_cmp(&left.bridge_score));
+    let mut zone_counts: HashMap<String, usize> = HashMap::new();
+    let mut artist_counts: HashMap<(String, String), usize> = HashMap::new();
+    report.bridge_playlist = ranked
+        .into_iter()
+        .filter(|item| {
+            let zone_count = zone_counts.entry(item.phase.clone()).or_default();
+            let artist = item
+                .track
+                .artists
+                .first()
+                .map(|value| normalize_text(value))
+                .unwrap_or_default();
+            let artist_count = artist_counts
+                .entry((item.phase.clone(), artist))
+                .or_default();
+            if *zone_count >= 4 || *artist_count >= 2 {
+                return false;
+            }
+            *zone_count += 1;
+            *artist_count += 1;
+            true
+        })
+        .collect();
+    report.summary = if report.bridge_playlist.is_empty() {
+        format!(
+            "已完成两份真实歌单的确定性比较；当前没有同时满足双方关联和双源排除条件的真实推荐候选。{}",
+            if a.recommendation_summary.status == "not_configured"
+                || b.recommendation_summary.status == "not_configured"
+            {
+                " Last.fm 未配置，因此不会用 Demo 补齐共同推荐。"
+            } else {
+                " 候选不足时保持为空。"
+            }
+        )
+    } else {
+        format!(
+            "两份歌单共发现 {} 首共同歌曲、{} 位共同艺人和 {} 个共同 Genre；共同推荐严格排除了双方源歌单。",
+            report.shared_track_count,
+            report.shared_artists.len(),
+            report.shared_genres.len()
+        )
+    };
+    report
+}
+
+#[derive(Clone)]
+struct MutualCandidate {
+    track: Track,
+    source: String,
+    score_a: f32,
+    score_b: f32,
+}
+
+fn comparison_metrics(a: &Playlist, b: &Playlist) -> ComparisonReport {
+    let a_report = analyze_playlist(a);
+    let b_report = analyze_playlist(b);
+    let a_track_keys: HashSet<_> = a.tracks.iter().map(normalized_track_key).collect();
+    let b_track_keys: HashSet<_> = b.tracks.iter().map(normalized_track_key).collect();
+    let shared_track_count = a_track_keys.intersection(&b_track_keys).count();
+    let track_overlap = jaccard(&a_track_keys, &b_track_keys);
+    let a_artist_keys: HashSet<_> = a.tracks.iter().flat_map(artist_identity_keys).collect();
+    let b_artist_keys: HashSet<_> = b.tracks.iter().flat_map(artist_identity_keys).collect();
+    let artist_overlap = jaccard(&a_artist_keys, &b_artist_keys);
+    let mut shared_artists: Vec<_> = a_artist_keys
+        .intersection(&b_artist_keys)
+        .filter_map(|value| value.strip_prefix("name:"))
+        .map(str::to_string)
+        .collect();
+    shared_artists.sort();
+    let genre_set = |playlist: &Playlist| {
+        playlist
+            .tracks
             .iter()
-            .flat_map(|t| t.genres.iter().cloned())
+            .flat_map(|track| track.genres.iter())
+            .filter(|genre| !is_unknown_genre(genre))
+            .map(|genre| canonicalize_genre(genre))
             .collect::<HashSet<_>>()
     };
     let a_genres = genre_set(a);
     let b_genres = genre_set(b);
-    let mut shared: Vec<_> = a_genres.intersection(&b_genres).cloned().collect();
-    shared.sort();
-    let catalog = catalog();
-    let bridge_specs = [
+    let genre_overlap = jaccard(&a_genres, &b_genres);
+    let mut shared_genres: Vec<_> = a_genres.intersection(&b_genres).cloned().collect();
+    shared_genres.sort();
+    let tag_set = |playlist: &Playlist| {
+        playlist
+            .tracks
+            .iter()
+            .flat_map(|track| track.mood_tags.iter())
+            .map(|tag| normalize_text(tag))
+            .filter(|tag| !tag.is_empty())
+            .collect::<HashSet<_>>()
+    };
+    let tag_overlap = jaccard(&tag_set(a), &tag_set(b));
+    let diversity_a = a_report
+        .metrics
+        .first()
+        .map(|metric| metric.value)
+        .unwrap_or(0.0);
+    let diversity_b = b_report
+        .metrics
+        .first()
+        .map(|metric| metric.value)
+        .unwrap_or(0.0);
+    let diversity_complementarity = (1.0 - (diversity_a - diversity_b).abs()).clamp(0.0, 1.0);
+    let similarity = (track_overlap * 0.28
+        + artist_overlap * 0.25
+        + genre_overlap * 0.27
+        + tag_overlap * 0.1
+        + diversity_complementarity * 0.1)
+        .clamp(0.0, 1.0);
+    let signatures = |report: &TasteReport| {
+        let mut values = report.core_preferences.clone();
+        if let Some(energy) = report
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "平均能量")
+        {
+            values.push(format!("Energy {}", energy.display));
+        }
+        values.truncate(4);
+        values
+    };
+    ComparisonReport {
+        user_a: a.name.clone(),
+        user_b: b.name.clone(),
+        metrics: vec![
+            metric(
+                "Overall Compatibility",
+                similarity,
+                format!("{:.0}%", similarity * 100.0),
+                "曲目、艺人、Genre、Tag 与多样性互补度的确定性加权结果",
+            ),
+            metric(
+                "Track Overlap",
+                track_overlap,
+                format!("{:.0}%", track_overlap * 100.0),
+                "规范化曲目身份的 Jaccard 重合度",
+            ),
+            metric(
+                "Artist Overlap",
+                artist_overlap,
+                format!("{:.0}%", artist_overlap * 100.0),
+                "含集中别名解析的艺人身份重合度",
+            ),
+            metric(
+                "Genre Overlap",
+                genre_overlap,
+                format!("{:.0}%", genre_overlap * 100.0),
+                "规范化 Genre 集合的 Jaccard 重合度",
+            ),
+            metric(
+                "Tag Overlap",
+                tag_overlap,
+                format!("{:.0}%", tag_overlap * 100.0),
+                "真实元数据 Tag 集合的重合度",
+            ),
+            metric(
+                "Diversity Complementarity",
+                diversity_complementarity,
+                format!("{:.0}%", diversity_complementarity * 100.0),
+                "双方多样性差距越小，基础兼容度越高",
+            ),
+        ],
+        track_count_a: a.tracks.len(),
+        track_count_b: b.tracks.len(),
+        shared_track_count,
+        shared_artists,
+        shared_genres,
+        user_a_signatures: signatures(&a_report),
+        user_b_signatures: signatures(&b_report),
+        summary: format!(
+            "已比较 {} 与 {} 的真实曲目、艺人、Genre、Tag 和多样性。",
+            a.name, b.name
+        ),
+        bridge_playlist: Vec::new(),
+        is_demo: a.is_demo || b.is_demo,
+        data_source: if a.is_demo || b.is_demo {
+            "DEMO".into()
+        } else {
+            "REAL_TEMPORARY_COMPARISON".into()
+        },
+        saved_locally: false,
+    }
+}
+
+fn mutual_bridge_track(
+    candidate: MutualCandidate,
+    report_a: &TasteReport,
+    report_b: &TasteReport,
+) -> Option<BridgeTrack> {
+    let minimum = candidate.score_a.min(candidate.score_b);
+    let maximum = candidate.score_a.max(candidate.score_b);
+    let phase = if minimum >= 0.48 {
+        "Safe for Both"
+    } else if minimum >= 0.16 && maximum >= 0.48 {
+        "Bridge"
+    } else if minimum >= 0.14 && maximum >= 0.25 {
+        "Adventure Together"
+    } else {
+        return None;
+    };
+    let candidate_genres: HashSet<_> = candidate
+        .track
+        .genres
+        .iter()
+        .map(|genre| genre_key(genre))
+        .collect();
+    let mut shared_basis: Vec<_> = report_a
+        .core_preferences
+        .iter()
+        .chain(&report_b.core_preferences)
+        .filter(|genre| candidate_genres.contains(&genre_key(genre)))
+        .cloned()
+        .collect();
+    shared_basis.sort();
+    shared_basis.dedup();
+    let score = ((candidate.score_a + candidate.score_b) / 2.0).clamp(0.0, 0.99);
+    Some(BridgeTrack {
+        track: candidate.track,
+        reason: format!(
+            "A 关联 {:.0}% · B 关联 {:.0}%",
+            candidate.score_a * 100.0,
+            candidate.score_b * 100.0
+        ),
+        reason_for_a: profile_reason(candidate.score_a, report_a),
+        reason_for_b: profile_reason(candidate.score_b, report_b),
+        shared_basis,
+        candidate_source: candidate.source,
+        phase: phase.into(),
+        bridge_score: score,
+        already_in_a: false,
+        already_in_b: false,
+    })
+}
+
+fn profile_affinity(track: &Track, report: &TasteReport, playlist: &Playlist) -> f32 {
+    let core: HashSet<_> = report
+        .core_preferences
+        .iter()
+        .map(|genre| genre_key(genre))
+        .collect();
+    let genre_match = track
+        .genres
+        .iter()
+        .any(|genre| core.contains(&genre_key(genre)));
+    let source_artists: HashSet<_> = playlist
+        .tracks
+        .iter()
+        .flat_map(artist_identity_keys)
+        .collect();
+    let artist_match = artist_identity_keys(track)
+        .iter()
+        .any(|artist| source_artists.contains(artist));
+    (if genre_match { 0.55 } else { 0.14 }) + if artist_match { 0.28 } else { 0.0 }
+}
+
+fn profile_reason(score: f32, report: &TasteReport) -> String {
+    format!(
+        "与 {} 的核心偏好关联 {:.0}%",
+        report.core_preferences.join(" / "),
+        score * 100.0
+    )
+}
+
+fn jaccard<T: Eq + std::hash::Hash>(left: &HashSet<T>, right: &HashSet<T>) -> f32 {
+    if left.is_empty() && right.is_empty() {
+        return 0.0;
+    }
+    left.intersection(right).count() as f32 / left.union(right).count().max(1) as f32
+}
+
+fn demo_bridge_playlist() -> Vec<BridgeTrack> {
+    let specifications = [
         (
             "Dreams",
-            "共同入口",
+            "Safe for Both",
             "柔和旋律与中等能量为双方建立安全起点",
             0.92,
         ),
-        (
-            "Tadow",
-            "共同入口",
-            "R&B 律动中加入可被摇滚听众感知的器乐互动",
-            0.89,
-        ),
-        (
-            "Sober",
-            "风格连接",
-            "另类电子制作把 R&B 人声带向 Indie 的实验感",
-            0.87,
-        ),
+        ("Tadow", "Safe for Both", "R&B 律动中加入器乐互动", 0.89),
+        ("Sober", "Bridge", "另类电子制作连接 R&B 与 Indie", 0.87),
         (
             "Electric Feel",
-            "风格连接",
-            "迷幻合成器与强节拍同时覆盖 City Pop 和 Indie 偏好",
+            "Bridge",
+            "合成器与节拍覆盖双方示例偏好",
             0.90,
         ),
         (
             "The Less I Know the Better",
-            "风格连接",
-            "突出贝斯律动，从 Soul/Funk 平滑进入 Indie Rock",
+            "Bridge",
+            "Soul/Funk 平滑进入 Indie Rock",
             0.91,
         ),
         (
             "Pink + White",
-            "A 方探索",
-            "让 B 从柔和独立流行进入 A 的 Alternative R&B",
+            "Adventure Together",
+            "示例中的 Alternative R&B 共同探索",
             0.86,
         ),
         (
             "505",
-            "B 方探索",
-            "以渐进动态让 A 接近 B 的 Alternative Rock",
+            "Adventure Together",
+            "示例中的 Alternative Rock 共同探索",
             0.84,
         ),
         (
             "Somebody Else",
-            "双方延伸",
-            "兼具合成器氛围、R&B 节奏和 Indie 叙事",
+            "Adventure Together",
+            "示例中的合成器与 Indie 叙事",
             0.93,
         ),
     ];
-    let bridge_playlist = bridge_specs
+    let catalog = catalog();
+    specifications
         .iter()
         .filter_map(|(title, phase, reason, score)| {
             catalog
                 .iter()
-                .find(|t| t.title == *title)
+                .find(|track| track.title == *title)
                 .cloned()
                 .map(|track| BridgeTrack {
                     track,
                     reason: (*reason).into(),
+                    reason_for_a: "Demo A 解释".into(),
+                    reason_for_b: "Demo B 解释".into(),
+                    shared_basis: vec!["DEMO".into()],
+                    candidate_source: "DEMO 内置候选".into(),
                     phase: (*phase).into(),
                     bridge_score: *score,
+                    already_in_a: false,
+                    already_in_b: false,
                 })
         })
-        .collect();
-
-    ComparisonReport {
-        user_a: a.owner_label.clone(),
-        user_b: b.owner_label.clone(),
-        metrics: vec![
-            metric("Taste Similarity", 0.46, "46%".into(), "曲目、歌手、Genre、年代与能量的加权相似度"),
-            metric("Genre Overlap", 0.31, "31%".into(), "双方 Genre 集合的 Jaccard 重合度"),
-            metric("Era Compatibility", 0.78, "78%".into(), "主要收听年代的分布接近程度"),
-            metric("Mood Compatibility", 0.64, "64%".into(), "情绪标签与能量区间的兼容程度"),
-            metric("Complementarity", 0.81, "81%".into(), "差异能否由相邻风格平滑连接"),
-            metric("Discovery Potential", 0.88, "88%".into(), "在不牺牲接受度下引入新风格的空间"),
-        ],
-        shared_genres: if shared.is_empty() { vec!["Alternative".into(), "R&B crossover".into()] } else { shared },
-        user_a_signatures: vec!["Korean R&B".into(), "City Pop".into(), "低中能量".into()],
-        user_b_signatures: vec!["Indie Rock".into(), "Britpop".into(), "中高能量".into()],
-        summary: "两人的直接曲目重合有限，但在旋律性、复古音色和中等能量区间存在可利用的连接点。桥梁路线先共享氛围，再通过 Funk 贝斯和另类制作逐步展开双方特色。".into(),
-        bridge_playlist,
-    }
+        .collect()
 }
 
 #[cfg(test)]
@@ -632,8 +947,75 @@ mod tests {
             track.platform = "file".into();
         }
         let report = compare_playlists(&lists[0], &lists[1]);
-        assert_eq!(report.user_a, lists[0].owner_label);
-        assert_eq!(report.user_b, lists[1].owner_label);
+        assert_eq!(report.user_a, lists[0].name);
+        assert_eq!(report.user_b, lists[1].name);
         assert_eq!(report.bridge_playlist.len(), 8);
+    }
+
+    #[test]
+    fn identical_playlists_have_full_track_and_artist_overlap() {
+        let playlist = demo_playlists()[0].clone();
+        let report = compare_playlists(&playlist, &playlist);
+        let track_overlap = report
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Track Overlap")
+            .unwrap();
+        let artist_overlap = report
+            .metrics
+            .iter()
+            .find(|metric| metric.label == "Artist Overlap")
+            .unwrap();
+        assert_eq!(track_overlap.value, 1.0);
+        assert_eq!(artist_overlap.value, 1.0);
+        assert_eq!(report.shared_track_count, playlist.tracks.len());
+    }
+
+    #[test]
+    fn completely_different_playlists_explain_low_direct_overlap() {
+        let first = parse_manual_playlist("中文", "周杰伦 - 晴天\n林俊杰 - 背对背拥抱").unwrap();
+        let second =
+            parse_manual_playlist("English", "Miles Davis - So What\nJohn Coltrane - Naima")
+                .unwrap();
+        let report = compare_playlists(&first, &second);
+        assert_eq!(report.shared_track_count, 0);
+        assert!(report.shared_artists.is_empty());
+        assert!(!report.is_demo);
+    }
+
+    #[test]
+    fn partial_overlap_is_counted_without_inventing_shared_tracks() {
+        let first = parse_manual_playlist(
+            "A",
+            "BIBI - Kazino\nDEAN - instagram\nThe 1975 - Somebody Else",
+        )
+        .unwrap();
+        let second = parse_manual_playlist(
+            "B",
+            "DEAN - instagram\nNewJeans - Super Shy\nDua Lipa - Levitating",
+        )
+        .unwrap();
+        let report = compare_playlists(&first, &second);
+        assert_eq!(report.shared_track_count, 1);
+    }
+
+    #[test]
+    fn mutual_recommendations_exclude_both_source_playlists() {
+        let lists = demo_playlists();
+        let mut analysis_a = build_personal_demo(lists[0].clone());
+        let mut analysis_b = build_personal_demo(lists[1].clone());
+        analysis_a.playlist.is_demo = false;
+        analysis_b.playlist.is_demo = false;
+        let report = compare_analyses(&analysis_a, &analysis_b);
+        assert!(report.bridge_playlist.iter().all(|item| {
+            !analysis_a
+                .playlist
+                .tracks
+                .iter()
+                .chain(&analysis_b.playlist.tracks)
+                .any(|source| same_recording(source, &item.track))
+                && !item.already_in_a
+                && !item.already_in_b
+        }));
     }
 }

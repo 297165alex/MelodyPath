@@ -1,60 +1,50 @@
-# MelodyPath · 可解释音乐探索与跨平台好友歌单 Agent
+# MelodyPath
 
-> MelodyPath是《程序设计训练（Rust语言）》AI Agent课程项目，同时将阶段性成果用于智理杯智能体大赛。
+MelodyPath 是一个以 Rust 为可信计算核心、用可解释 Agent 帮助用户分析歌单、探索新音乐、比较好友品味并安全复制播放列表的本地优先 Web 应用。
 
-MelodyPath 不只统计歌单：它用可解释路线帮助用户从熟悉 Genre 逐步走向新风格，并在两名朋友的跨平台歌单之间生成变化平滑的“桥梁歌单”。比赛阶段使用完全离线、稳定且明确标注的 Demo 数据；课程实现保留完整 Rust 业务层、Agent 循环、实时进度、中断、SQLite 历史、配置与用量统计。
+# Overview
 
-# 当前最高开发优先级：跨平台歌单迁移
+音乐平台擅长推荐“你已经喜欢的东西”，却很少解释为什么一首新歌适合你、它离当前偏好有多远，或两个人的歌单可以从哪里建立共同入口。MelodyPath 因此把歌曲解析、身份归一化、音乐画像、候选生成、确定性评分和执行权限放进一条可核验的工作流。
 
-MelodyPath 不只是歌单分析和推荐网站。现有本地分析、Last.fm 可解释推荐、历史、Agent Loop、好友桥梁和导出能力必须继续保留；推荐功能目前可用，但真实验收已经记录了同曲不同版本去重、跨语言艺术家别名识别和推荐流水线分段统计仍不完整等限制，详见 [真实推荐验收报告](docs/recommendation_acceptance_report.md)。这些限制不得被隐瞒，也不应通过删除推荐模块来规避。
+项目目前包含五个主要场景：
 
-下一阶段的最高优先级是一个边界清晰、可独立验收的 **Transfer MVP**：
+- **可解释音乐探索 Agent**：围绕用户目标选择白名单 Rust 工具，并根据真实工具结果继续、重规划或结束。
+- **音乐偏好分析**：从文件或批量文本中计算 Genre、艺人、专辑、年代、重复曲目、合作曲目、集中度与多样性。
+- **推荐探索**：用真实 Last.fm 候选和本地评分生成舒适区、拓展区与惊喜区，并保留来源、种子和推荐理由。
+- **好友歌单比较**：比较两份用户提供的歌单，展示共同歌曲、共同艺人、相似度与双方都能理解的桥梁推荐。
+- **跨平台复制歌单**：首个 MVP 面向 Spotify → YouTube，先匹配和预览，再由用户处理歧义并确认创建新的私有播放列表。
 
-> Spotify 用户拥有或参与协作的歌单  
-> → 使用 YouTube 官方接口搜索并确定性匹配对应歌曲  
-> → 由用户预览并确认歧义候选  
-> → 创建一个新的 YouTube 私有播放列表
+MelodyPath 严格区分真实文件、真实文本、真实账号数据、显式 Demo 与错误状态。真实流程失败时不会自动切换到 Demo，也不会用固定歌曲伪装成实时推荐。
 
-Transfer 是 MelodyPath 的核心 Agent 执行场景，不是普通的 LLM 推荐：系统需要执行分页读取、候选搜索、可解释评分、人工确认、逐首写入、进度反馈、中断和结果报告。Spotify 数据不得发送给 LLM，也不得用于训练、画像或与迁移无关的推荐。
+# Quick Start
 
-账号连接必须使用 Spotify 和 Google/YouTube 的官方 OAuth。项目不得收集 Spotify 或 Google 密码、Cookie，不得模拟登录、绕过授权或调用私有接口；迁移不得修改或删除源 Spotify 歌单，目标端默认只能新建私有播放列表。
+## Prerequisites
 
-Mock 和自动测试通过只表示代码路径可测试，不能声称真实迁移成功。只有用户在真实浏览器中完成 Spotify 与 Google 两端登录授权、选择源歌单、确认匹配预览，并最终得到可访问的新 YouTube 播放列表链接，才能将真实 OAuth 迁移验收标记为通过。
+- 支持 Rust 2024 edition 的稳定 Rust 工具链（建议 Rust 1.85 或更高版本）
+- Node.js 20.19+ 或 22.12+
+- npm
 
-## 已实现能力
+真实 Last.fm 推荐需要后端环境中存在 `LASTFM_API_KEY`。没有该配置时，本地解析和音乐画像仍可运行，推荐区域会明确报告 Provider 未配置，不会回退 Demo。外部 LLM、Spotify 和 YouTube 均为可选配置，详见后文状态表。
 
-- Rust + Axum 后端；分析、标准化、评分、桥梁约束和 Agent 调度均在 Rust 中。
-- React + TypeScript + Vite 中文界面，含首页、品味地图、三段推荐、探索路线、双人桥梁、Agent、历史与设置。
-- 三组离线示例数据；无需音乐平台 API 或 LLM Key。
-- 首页主入口按“官方平台连接 → 公开歌单链接 → 更多导入方式”排列；普通用户无需制作 JSON/CSV。
-- 后端 `/api/platforms/capabilities` 是平台状态的唯一真相源，未接通能力不会在前端伪装为可用。
-- 公开链接可识别网易云、QQ音乐、Spotify 与 YouTube 官方域名、解析歌单 ID 并检查页面可访问性；没有可验证官方曲目接口时明确停止，不抓私人 Cookie。
-- 手动“歌手 - 歌名”和 TXT、CSV、JSON、M3U/M3U8 文件作为备用输入；缺失元数据时明确降低置信度。
-- 两项音乐定制 Agent 场景：个人 Genre 探索、跨平台好友桥梁。
-- SQLite 任务历史、SSE 实时进度、任务中断、失败终态、最大步数和超时边界。
-- 模型 Endpoint、名称、温度、Token、超时、重试、价格和费用上限可配置；API Key 只读环境变量。
-- `PlaylistWriter` 统一接口，以及文件、Demo、Spotify 与四个平台预留适配器。
-- CSV / JSON / M3U8 真实文件导出；预览和明确确认是必经步骤。
-- Spotify 官方 Authorization Code Flow、昵称/连接状态、个人可访问歌单选择、统一 Track 转换、token 刷新、解除连接、本地 token 删除、ISRC/元数据匹配、新建私有歌单、批量写入与真实链接（需要用户自己的 Spotify 应用凭据）。
-- Spotify API 数据只进入歌单传输/写回路径，不进入 LLM、用户画像、相似度、Genre 推荐或模型训练。
-- YouTube 官方 Google OAuth、账号频道、拥有的播放列表分页、playlistItems 分页、标题噪声清理、统一 Track、token 刷新、解除连接、新建播放列表和加入视频（需要用户自己的 Google Cloud 配置，尚待真实账号验收）。
-- Spotify、YouTube 与 Apple Music 均提供后端环境变量检测和中文配置向导；前端不会回显 Client Secret、私钥或 token。
+## 1. 启动后端
 
-## 环境要求
-
-- Rust 1.85+（edition 2024）
-- Node.js 20+
-- npm 10+
-
-## 安装与启动
-
-打开两个终端。后端：
+在项目根目录执行：
 
 ```powershell
 cargo run -p melody-path-api
 ```
 
-前端：
+后端默认监听 `http://127.0.0.1:3000`。可打开 `http://127.0.0.1:3000/health` 检查服务状态。
+
+Windows 用户也可以使用安全启动脚本。它只在运行时读取 Windows User scope 中的环境变量，不打印变量值：
+
+```powershell
+.\start-backend.ps1
+```
+
+## 2. 启动前端
+
+打开另一个终端：
 
 ```powershell
 cd frontend
@@ -62,98 +52,405 @@ npm install
 npm run dev
 ```
 
-浏览器打开 `http://127.0.0.1:5173`。Vite 会把 `/api` 代理到 `http://127.0.0.1:3000`。首次后端启动会在项目目录创建 `melody_path.db`。
+请打开 Vite 输出的实际地址。仓库配置的默认开发端口是 `3001`；若端口被占用，Vite 会给出实际可用地址。
 
-
-## 无需登录的本地歌单分析（新增）
-
-首页点击“立即本地分析”，直接粘贴每行一首的 `歌手 - 歌名`，或上传 TXT/CSV/JSON/M3U8。后端会：
-
-1. 在本机解析歌单；
-2. 联网时查询 Apple 公开音乐目录补全已有歌曲的 Genre、专辑、年代、时长和预览链接；
-3. 查询失败时保留用户原始歌曲，不会让任务整体失败；
-4. 配置 `LASTFM_API_KEY` 后，从真实种子调用 Last.fm 的相似歌曲、相似艺术家和关联标签接口生成候选，再由 Rust 在本地评分；
-5. 未配置 Last.fm 或请求失败时明确显示空区，不会用 Apple 关键词搜索或 Demo 冒充推荐。
-
-该流程不要求 Spotify、网易云、QQ 音乐等账号，不读取密码或 Cookie。Last.fm 推荐只需要后端环境变量 `LASTFM_API_KEY`，终端用户无需登录；Key 不返回前端也不写入日志。默认最多联网补全前 40 首，可通过 `LOCAL_ANALYSIS_MAX_TRACKS` 调整；公开目录 storefront 可通过 `ITUNES_STOREFRONT` 调整。
-
-示例输入：
-
-```text
-BIBI - Kazino
-DEAN - instagram
-Mariya Takeuchi - Plastic Love
-周杰伦 - 晴天
-```
-
-## 比赛 Demo 操作路径
-
-1. 首页先讲解真实平台能力状态，再展开“更多导入方式”，点击 Demo 查看用户 A 的品味地图和数据声明。
-2. 进入“探索推荐”，讲解舒适区、拓展区、惊喜区和 Korean R&B → Alternative R&B → Neo Soul 路线。
-3. 点击“导出歌曲清单”，选择 10 首、预览、勾选明确确认并下载 CSV。
-4. 点击“演示写入流程”，完成相同的预览—确认—结果链路；页面会持续标注这是虚拟写入。
-5. 进入“好友桥梁”，展示 A/B 指标与桥梁歌单，再演示文件导出。
-6. 进入“Agent 运行”，启动任一场景；展示 Rust SSE 进度并可中断。到“历史”加载结果和用量。
-
-## Spotify 真实写入（可选）
-
-1. 在 Spotify Developer Dashboard 创建应用，将 `http://127.0.0.1:3000/api/spotify/callback` 登记为 Redirect URI。
-2. 复制 `.env.example` 中变量到当前终端环境，设置 `SPOTIFY_CLIENT_ID` 与 `SPOTIFY_CLIENT_SECRET`。
-3. 重启后端。首页状态会从“需要配置开发者应用”变为“官方账号连接已支持”。
-4. 点击“前往 Spotify 官方授权”。授权范围为 `playlist-read-private`、`playlist-read-collaborative`、`playlist-modify-public` 与 `playlist-modify-private`；项目不接收密码，不绕过登录/验证码。
-5. 返回后页面显示 Spotify 昵称，可以选择一个或多个当前账号可访问的歌单，确认后查看统一 Track 预览。
-6. 受 Spotify Developer Policy 限制，Spotify 来源数据不进行画像、衍生指标或 AI 分析；可用于用户主动发起的歌单传输/写回。Demo 或用户主动提供的非 Spotify 测试数据仍可展示完整推荐。
-7. 选择歌曲后必须先匹配预览；中置信度候选需选择版本。明确确认后才创建新的私有歌单。页面“解除连接”会删除后端内存 token 和 HttpOnly 会话 cookie。
-
-access/refresh token 仅保存在后端进程内存，不写入数据库、不返回前端、不记录日志；浏览器只持有不透明的 HttpOnly 会话 cookie。服务重启后需重新授权。完整验收见 [docs/spotify_acceptance.md](docs/spotify_acceptance.md)。
-
-## 模型配置
-
-设置页可以保存 OpenAI-compatible Endpoint、模型、温度、输出上限、价格与预算。`OPENAI_API_KEY` 只从后端环境变量读取，绝不通过设置页提交或保存到 SQLite。配置 Key 后，Agent 会在确定性结果之后调用 `/chat/completions` 增强路线解释，按服务端 usage 统计 Token 与估算费用，并遵守超时、重试和预算上限；调用失败会保留 Rust 结果并明确标记降级。未配置 Key 时 Token 和费用为真实的 `0`。
-
-## 检查与测试
+Windows 也可以在项目根目录一次启动前后端：
 
 ```powershell
-cargo fmt --all --check
-cargo check
-cargo test
-cd frontend
-npm run lint
-npm run build
+.\start-melodypath.ps1
 ```
 
-Rust 测试覆盖文本解析、标题/版本标准化、统计指标、推荐去重与歌手集中度、桥梁约束、任务历史/中断、API 确认边界和文件转义。
+脚本会避免重复启动服务、隐藏运行子进程、验证后端健康状态，并输出 `Frontend = ...`。不需要保持 PowerShell 窗口打开。
 
-## 关键代码导读
+> 页面浏览提示
+> 
+> 由于 MelodyPath 包含较长的分析结果、Agent 执行轨迹和推荐内容，部分功能完成后，结果可能显示在当前视图之外。
+>
+> 如果点击按钮后没有立即看到变化，请尝试：
+> - 向上滚动查看分析结果；
+> - 向下滚动查看后续推荐区域；
+> - 等待 Agent 或分析任务完成后查看完整页面。
+> 
+> 部分页面（如 Recommendation、Agent、Version Radar、Compare）会动态生成较长内容，请不要仅根据当前屏幕位置判断任务是否成功。
 
-- `backend/src/engine.rs`：确定性音乐分析、推荐路线和桥梁约束。
-- `backend/src/agent.rs`：可取消 Agent Loop、步骤/超时边界与 SQLite 历史。
-- `backend/src/writers/mod.rs`：统一写回 trait、文件/Demo/预留适配器。
-- `backend/src/writers/spotify.rs`：Spotify OAuth、刷新、匹配和写入。
-- `backend/src/platforms.rs`：平台能力矩阵、官方域名白名单、公开链接识别与可访问性检查。
-- `backend/src/main.rs`：REST、SSE、写回预览/确认与下载 API。
-- `frontend/src/ExportModal.tsx`：选择—预览—版本确认—执行—报告界面。
 
-## 常见问题
 
-**没有 API Key 能演示吗？** 能。全部核心 Demo、分析、比较、Agent 进度和文件导出均离线运行。
+## 3. 上传歌单
 
-**为什么 Apple Music 按钮仍提示尚未完成验收？** MusicKit 配置检测和 bootstrap 已实现，但尚未用真实 Apple Developer 账号完成歌单读写验收，因此不会把预留流程伪装成成功。YouTube 的官方 OAuth 与读写代码已实现，配置 Google Cloud 后可由账号持有人验收。
+> 小插曲：我曾努力尝试实现“连接音乐账号后一键读取歌单”的体验，但不同音乐平台的 OAuth、权限和接口限制比想象中复杂。目前 Spotify / YouTube 的官方连接框架已经完成，但真实账号授权仍需要平台配置。为了保证安全和稳定性，MelodyPath 当前优先支持标准歌单文件导入。
+>
+> 如果未来各平台提供更开放统一的官方接口，我也希望继续完善“一键连接 → 自动分析”的体验。
 
-**为什么网易云/QQ音乐链接识别成功后仍可能不能分析？** “识别链接/页面可访问”不等于拥有合法稳定的曲目读取 API。未获得可验证官方权限时，MelodyPath 会明确停止并提供直接粘贴歌曲清单的备用入口。
+在首页展开本地导入区域，可以：
 
-**为什么 Spotify 选中的歌单不能直接做画像或推荐？** 当前 Spotify Developer Policy 禁止对 Spotify 内容进行分析、生成衍生指标或将其摄入 AI/ML。项目因此只把这些数据用于用户主动发起的歌单传输和写回。
+- 上传 `.txt`、`.csv`、`.tsv`、`.json`、`.m3u` 或 `.m3u8`；
+- 粘贴每行一首的批量文本，例如 `歌手 - 歌名`；
+- 明确点击 Demo，只体验与真实数据分离的演示流程。
 
-**Demo 链接为什么是 `demo://`？** 它刻意表示虚拟歌单，不是可访问的真实平台资源。
+文件或文本会先进入导入预览。页面展示总行数、成功解析数、警告、无法解析行、检测字段和前 20 首歌曲；用户确认后才开始分析。无法匹配元数据的歌曲仍保留原始歌名和歌手，并继续参与不依赖 Genre 的基础统计。
 
-**会修改原始歌单吗？** 不会。写回实现只创建新歌单，并且预览后需要用户明确确认。
+### 如何获得歌单文件？
 
-## 文档
+如果你的音乐歌单来自其他平台，可以通过以下方式导出：
 
-- [产品与比赛介绍](docs/product_intro.md)
-- [3—5 分钟演示脚本](docs/demo_script.md)
-- [系统架构](docs/architecture.md)
-- [真实能力与限制](docs/limitations.md)
-- [Spotify 手动验收](docs/spotify_acceptance.md)
-- [Spotify、Google/YouTube 与 Apple 配置清单](docs/platform_setup.md)
-- [平台能力与官方接入调查](docs/platform_capabilities.md)
+### Spotify
+
+推荐方式：
+1. 使用支持 Spotify Playlist Export 的工具导出歌单；
+2. 保存为 CSV 或 TXT；
+3. 上传到 MelodyPath。
+
+导出的文件至少包含：
+Artist - Track Name
+即可进行分析。
+
+### Apple Music
+
+可以：
+- 导出播放列表信息；
+- 或使用第三方导出工具生成 CSV；
+- 再上传到 MelodyPath。
+
+### YouTube Music
+
+可通过：
+- Google Takeout
+- 第三方 Playlist Export 工具
+
+获得歌曲列表后上传。
+
+支持格式：
+Artist - Track
+
+### 网易云音乐 / QQ音乐 / 汽水音乐 / 其他平台
+
+由于不同平台开放接口不同，目前 MelodyPath 不要求用户登录这些平台。
+
+推荐方式：
+- 导出歌单文件；
+- 或复制歌曲列表；
+- 或整理为：
+
+歌手 - 歌名
+
+
+格式后上传。
+
+
+### 快速体验
+
+如果暂时没有自己的歌单，可以直接使用项目提供的示例 CSV：
+
+
+examples/
+
+
+体验：
+
+- Music Profile
+- Recommendation
+- Surprise Zone
+- Agent Analysis
+
+
+---
+
+上传后，歌曲会先进入导入预览阶段。
+
+页面会展示：
+
+- 总行数；
+- 成功解析数量；
+- 无法解析歌曲；
+- 检测到的字段；
+- 前 20 首歌曲预览。
+
+
+用户确认后才开始分析。
+
+无法匹配 Genre 等额外信息的歌曲仍会保留原始歌名和歌手，并继续参与基础统计。
+
+## 4. 体验主要页面
+
+- **音乐画像**：确认导入后查看实际参与分析数量、Genre/Energy 覆盖率、艺人和专辑分布等结果。
+- **推荐**：进入 `/discover` 查看 Comfort Zone、Expansion Zone、Surprise Zone、推荐种子、Provider 遥测和探索路线。真实候选需要配置 Last.fm。
+- **Agent**：进入 `/agent`，绑定刚完成的真实 Analysis 或 Compare 结果，查看结构化决策、Rust 工具调用、SSE 进度、取消/恢复、Token 与费用。
+- **Compare**：进入 `/compare`，分别导入 Friend A 与 Friend B 的歌单，确认后进行临时比较。
+- **Version Radar**：进入 `/versions`，选择当前 Analysis 或本地文件并扫描其他录音版本。真实 YouTube 搜索需要完成 Google OAuth 与 YouTube Data API 配置。
+- **Copy Playlist**：进入 `/transfer` 查看 Spotify → YouTube 的匹配、预览、确认和执行流程。真实复制需要两端开发者配置及用户本人授权。
+
+# Features
+
+> 小提示：MelodyPath 有时候会“认真工作但不主动把你拉到结果那里”。如果点击分析、推荐或 Agent 后暂时没有看到结果，请记得向上或向下滚动查看完整内容。
+> 
+## 1. Music Profile Analysis
+
+所有真实输入都会先转换为统一的 `ImportedTrack` / `Track` 模型。当前导入支持：
+
+- TXT
+- CSV 与 TSV
+- JSON
+- M3U / M3U8
+- 手动批量输入
+
+CSV/TSV 使用 Rust `csv` 库解析，支持 UTF-8 BOM、引号和字段内逗号、中英文常见表头、多艺人、Genre、时长与真实 Energy 字段。文本中歌手与歌名顺序不明确时，预览页会要求用户确认，而不是直接猜测。
+
+分析结果包括：
+
+- **Music Profile**：核心偏好、相邻偏好、待探索方向、集中度、多样性与元数据置信度；
+- **Genre**：统一规范化后的分布、核心 Genre 与覆盖率；
+- **Artist**：艺人频次、合作歌曲与集中式跨语言艺人身份；
+- **Feature**：专辑和年代分布、重复曲目、合作曲目、真实 Energy 均值与覆盖率。
+
+Energy 缺失保持为 `None`，不会被当作 0，也不会生成虚构值。Genre 或外部元数据缺失不会删除用户原曲。
+
+## 2. Explainable Recommendation
+
+真实推荐从用户歌单中选择最多 10 首代表性种子，通过 Last.fm 的歌曲相似、艺人相似和标签关系生成候选，再由 Rust 完成身份归一化、版本过滤、源歌单排除、去重、同艺人上限和确定性排序。
+
+推荐分为：
+
+- **Comfort Zone / 舒适区**：与核心偏好接近，优先考虑高歌曲相似度、标签重合和熟悉风格。
+- **Expansion Zone / 拓展区**：通过相似艺人、第一层相邻标签或相邻 Genre 增加探索距离。
+- **Surprise Zone / 惊喜区**：差异更大，但必须保留一条可解释的偏好连接。
+
+Surprise 不是随机推荐，也不会用固定歌曲补齐。Controlled Serendipity 会综合使用：
+
+- Similar Artist；
+- Similar Tag 与第二层标签路径；
+- Genre Bridge 的两跳探索；
+- second-hop similar artist 等可解释桥梁。
+
+每首推荐可显示关联种子、来源接口、Last.fm 原始 similarity、系统综合 score、UI confidence、共享标签和理由。三者是独立字段，不会无条件显示成同一个百分比。候选池支持“换一批”和“查看更多”；同一 Analysis Session 内优先消费已保存候选，避免立即重复请求或重复展示。
+
+## 3. Personal Music Exploration Agent
+
+Personal Music Exploration Agent 不是按固定顺序播放动画的普通脚本。真实任务必须绑定当前 `analysis_id`，Agent 只能在 Rust 提供的 Tool Registry 白名单和已满足依赖的工具前沿中选择下一步：
+
+```text
+User Goal
+    ↓
+Agent Decision
+    ↓
+Rust Tool Call
+    ↓
+Tool Result
+    ↓
+Replan / Continue / Finish
+```
+
+工具结果会影响后续选择。例如惊喜候选不足时，下一步可以在 Genre Bridge 与 second-hop similar artist 路径中选择；不会永远执行一份不看结果的固定计划。
+
+页面只展示可核验的结构化状态：User Goal、Normalized Intent、Decision Mode、当前 Plan、Tool Called、Tool Result Summary、Continue/Replan/Finish、Token Usage 与 Estimated Cost。它不展示隐藏 chain of thought，也不把自然语言解释当作音乐事实。
+
+配置兼容的外部模型后，LLM 可参与高层决策。未配置 `OPENAI_API_KEY` 或模型调用失败时，运行会明确标记为 `DETERMINISTIC_FALLBACK`；fallback 仍使用真实绑定数据和真实 Rust 工具，不会切换 Demo。
+
+## 4. Friend Bridge Agent
+
+Friend Bridge 接收两份分别预览并确认的歌单，使用确定性指标比较：
+
+- common songs；
+- common artists；
+- Track、Artist、Genre 与 Tag similarity；
+- diversity complementarity；
+- bridge recommendation。
+
+桥梁候选分为 `Safe for Both`、`Bridge` 与 `Adventure Together`，同时排除两份源歌单，并分别保留对 Friend A、Friend B 的关联依据。比较默认是临时流程，不创建公开社交账号，也不默认保存好友歌单。真实候选不足时保持为空，不用 Demo 补齐。
+
+## 5. Version Radar
+
+独立 `/versions` 页面和扫描流程已经实现。用户可以从当前已分析歌单、本地文件或已授权的 YouTube 账号歌单中选择来源，并主动查找：
+
+- Live
+- Concert
+- Remix
+- Acoustic
+- Unplugged
+- Remaster
+
+Version Radar 用于发现同一首歌在不同平台或不同录音版本中的可用形式。Rust 会比较基础标题、艺人身份、版本语义、官方艺人/Topic/VEVO 信号，以及双方都有真实时长时的时长差。扫描按每批 4 首、最多 40 首执行，页面提供进度和取消。
+
+当前页面、批处理、版本分类、确定性匹配以及 `Add to playlist → preview → confirm` 安全流程均已实现。真实平台搜索依赖 Google OAuth 与 YouTube Data API 配置；未配置或未授权时显示 `BLOCKED_EXTERNAL_AUTH`。显式 Mock 只验证流程，不能视为真实平台搜索成功。
+
+## 6. Copy Playlist
+
+产品统一使用 **Copy Playlist / 跨平台复制歌单**；这里的“复制”明确表示保留源内容。当前课程 MVP 的目标流程是：
+
+```text
+Spotify Source Playlist
+        ↓
+YouTube Matching
+        ↓
+Preview
+        ↓
+User Confirmation
+        ↓
+Create a new private YouTube Playlist
+```
+
+后端会分页读取用户拥有或参与协作的 Spotify 歌单，转换为统一 `TransferTrack`，再通过 YouTube 官方搜索为每首保留最多 5 个候选。匹配分数考虑标题、艺人、真实时长差、官方/Topic 频道信号和 Live、Cover、Remix、Sped Up 等版本词，输出 `MATCHED_HIGH`、`MATCHED_AMBIGUOUS` 或 `UNMATCHED`。
+
+歧义和不同版本候选必须由用户改选或跳过；明确确认前禁止创建播放列表。执行时只创建新的私有 YouTube 播放列表，单首失败不会终止整个任务，并提供 run id、SSE 进度、取消/恢复、逐首结果及 CSV/JSON 报告。
+
+**原 Spotify 歌单不会被修改或删除。** 当前 Copy 会话保存在后端进程内，服务重启后需要重新生成预览，不能宣称跨重启恢复。代码与 Mock 已验证，但真实 Spotify → YouTube OAuth 端到端复制尚未完成，因此当前没有真实目标播放列表链接。
+
+# Platform Support
+
+状态定义：
+
+- **REAL VERIFIED**：已用真实外部账号或 Provider 完成端到端验收。
+- **IMPLEMENTED BUT CONFIG REQUIRED**：官方接口代码已实现，但仍需要开发者配置、额度或用户人工授权。
+- **IMPORT ONLY**：当前只能使用用户主动提供的文件或粘贴文本。
+- **UNSUPPORTED**：当前没有合法、稳定且已验证的实现。
+
+| 平台 | 读取能力 | 写入能力 | 当前状态 |
+|---|---|---|---|
+| Spotify | 官方 OAuth、账号身份、歌单与曲目分页读取代码已实现；仅用于用户主动发起的 Copy/写回 | 新建歌单与批量加入代码已实现 | **IMPLEMENTED BUT CONFIG REQUIRED**；尚未完成真实账号人工授权，不是 REAL VERIFIED |
+| YouTube / YouTube Music | Google OAuth、用户播放列表与 playlistItems 分页读取代码已实现；Version Radar 搜索也依赖该授权 | 新建私有播放列表与插入视频代码已实现 | **IMPLEMENTED BUT CONFIG REQUIRED**；仍需 Google Cloud、YouTube Data API、额度与人工授权 |
+| Apple Music | 当前没有 MusicKit 账号读取 Connector；只接受用户导出的文件或文本 | **UNSUPPORTED** | **IMPORT ONLY / CONNECTOR NOT IMPLEMENTED** |
+| NetEase / 网易云音乐 | 文件或粘贴文本；公开链接目前只做识别和可访问性检查，不能读取曲目 | **UNSUPPORTED** | **IMPORT ONLY** |
+| QQ Music / QQ音乐 | 文件或粘贴文本；没有已验证的通用个人歌单 OAuth | **UNSUPPORTED** | **IMPORT ONLY** |
+| Kugou / 酷狗音乐 | 文件或粘贴文本；官方个人歌单能力需要正式合作资格 | **UNSUPPORTED** | **IMPORT ONLY / PARTNERSHIP REQUIRED** |
+
+Last.fm 推荐 Provider 已使用五份真实歌单完成串行浏览器验收，状态为 **REAL VERIFIED**；它不需要终端用户登录 Last.fm。Spotify/YouTube 的 OAuth 流程虽然已实现，但“一键登录并真实复制”尚未完成账号持有人验收。必须由用户使用自己的开发者配置，在 Spotify 与 Google 官方页面授权，并最终得到新的真实 YouTube 播放列表链接后，才能标记为 REAL VERIFIED。
+
+公开分享链接“可识别”或“页面可访问”不等于能够合法读取完整曲目。MelodyPath 不会把这两个状态冒充成平台连接成功。
+
+# Architecture
+
+```text
+React + TypeScript UI
+  ├─ Import preview / Analysis / Discover
+  ├─ Compare / Version Radar / Copy Playlist
+  └─ Agent trace / History / Settings
+                 │ REST + SSE
+                 ▼
+Rust + Axum Backend
+  ├─ Decision Layer
+  ├─ Tool Registry
+  ├─ Deterministic Rust Tools
+  ├─ Last.fm / metadata providers
+  └─ Spotify / YouTube official connectors
+                 │
+                 ▼
+SQLite + process-local session state
+```
+
+- **Frontend — React + TypeScript + Vite**：负责导入预览、结果可视化、结构化 Agent 轨迹、歧义确认和执行进度。
+- **Backend — Rust + Axum**：负责解析、规范化、画像、推荐、比较、版本判断、Copy 匹配、权限检查、REST 与 SSE。
+- **Storage — SQLite**：保存 Agent 目标、意图、计划、工具结果、历史、检查点、设置、Token 和费用记录；OAuth Secret 不写入 SQLite。导入预览、Analysis Registry 与 Copy run 当前包含进程内状态。
+- **Agent**：由 Decision Layer、白名单 Tool Registry 和确定性 Rust Tools 组成。外部模型不是数据处理器，也没有 shell、任意文件、任意 HTTP 或任意 SQL 权限。
+
+关键实现位置：
+
+- `backend/src/import.rs`：统一文件与文本导入；
+- `backend/src/engine.rs`：音乐画像、比较指标和桥梁逻辑；
+- `backend/src/recommendation.rs`：Last.fm 候选、三区评分、过滤和遥测；
+- `backend/src/agent.rs`：结构化决策循环、工具执行、SSE、取消/恢复和历史；
+- `backend/src/alternate.rs`：Version Radar 的版本判断与评分；
+- `backend/src/transfer.rs`：Copy Playlist 的统一模型、匹配、确认和执行；
+- `backend/src/writers/spotify.rs`、`youtube.rs`：官方 OAuth 与平台读写；
+- `frontend/src/App.tsx`：主要页面与路由；
+- `frontend/src/ExportModal.tsx`：统一的选择、匹配预览和确认写入界面。
+
+# Agent Design
+
+在模型配置可用时，LLM 只负责高层决策：
+
+- intent understanding；
+- planning；
+- 从当前允许的工具中进行 tool selection；
+- 根据紧凑 `ToolResult` 决定 continue、replan 或 finish；
+- 生成不改变确定性结果的 explanation。
+
+Rust 始终负责核心确定性工作：
+
+- parsing；
+- title、artist、Genre 与 version normalization；
+- recommendation ranking、dedup 与源歌单排除；
+- Compare metrics 与 bridge constraints；
+- Transfer matching；
+- permission、确认闸门与 external writes。
+
+模型输出必须符合 serde 校验的结构化 `AgentDecision`，未知工具会在执行前被拒绝。Agent 还受最大步骤、总超时、重试、输出 Token 和费用上限保护。核心音乐计算不会交给 LLM 猜测；Spotify API 内容也不会发送给 LLM。
+
+当前真实浏览器 Agent 使用真实导入数据与真实 Rust 工具完成，但因为环境中没有可验证的外部 LLM 配置，Decision Mode 为 **DETERMINISTIC_FALLBACK**，Token 与费用为 0。该状态不能写成 REAL LLM VERIFIED。
+
+# Security and Privacy
+
+MelodyPath 不会：
+
+- 获取或保存 Spotify、Google 或其他音乐平台密码；
+- 读取用户 Cookie；
+- 模拟登录、绕过验证码或调用私有/逆向接口；
+- 在用户确认前创建或修改外部播放列表；
+- 删除或修改 Copy 的源歌单；
+- 把 Spotify API 内容发送给 LLM、用于画像、衍生指标或模型训练。
+
+所有账号连接只允许走官方 OAuth。OAuth state 使用一次性校验；浏览器只持有不透明的 HttpOnly、SameSite 会话 Cookie。Access token、refresh token、API Key 和 Client Secret 不返回前端、不写入日志、不提交 Git。Windows 本地开发使用当前用户范围的 DPAPI 加密 OAuth 会话并存放在项目目录之外；生产部署仍需要托管 Secret/KMS、HTTPS、安全 Cookie、密钥轮换与审计。
+
+`.env`、数据库、token 文件、私人歌单、构建目录和运行日志均不应提交到公开仓库。仓库中的 `.env.example` 只提供变量名，不包含真实凭据。
+
+# Testing
+
+最近一次最终审计记录（2026-09-06）：
+
+| 检查 | 结果 |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo check --workspace` | PASS |
+| `cargo test --workspace` | **105/105 PASS** |
+| `frontend/npm run lint` | PASS |
+| `frontend/npm run build` | PASS |
+
+Rust 测试覆盖导入格式与大歌单、Genre/艺人/版本规范化、Energy 缺失、Last.fm Provider 降级、三区推荐、候选池换批、源歌单排除、Compare、结构化 AgentDecision、非法工具、动态下一步、步数/费用限制、真实 Analysis 绑定、Copy 分页与匹配、歧义确认、失败隔离、取消/恢复，以及 OAuth 安全边界。
+
+真实数据验证包括：
+
+- 五份不同规模的真实歌单已串行完成浏览器导入与 Last.fm 推荐，全部 `is_demo=false`，三区均产生真实候选，且推荐集合明显不同；
+- 真实文件 Personal Agent 与真实文本 Friend Bridge 已验证不会读取 Demo payload；
+- Happy_Mix 回归记录为 50/50 解析、`REAL_FILE`、13 个真实 Rust 工具调用完成，Agent 结果与绑定 Analysis 一致；
+- `/`、`/discover`、`/compare`、`/versions`、`/transfer`、`/agent` 已完成本地浏览器直达检查，终检没有新增关键控制台错误。
+
+以下不属于真实外部验收：外部 LLM 多步决策、Spotify/YouTube 真人 OAuth、真实 YouTube 版本搜索、真实跨平台播放列表创建。相关 Mock 只证明程序流程和安全闸门，不证明外部平台已接通。
+
+# Limitations and Future Work
+
+项目已经尝试并完成 Spotify 一键授权流程、YouTube OAuth 流程和统一多平台能力矩阵的代码实现，但当前仍有明确限制：
+
+- **OAuth 配置**：Spotify 与 YouTube 需要用户自己的开发者应用、Client 配置、完全一致的 Redirect URI 和账号持有人手动授权。
+- **平台官方 API 权限**：开发模式资格、审核、YouTube 配额及中国平台合作权限不由仓库代码自动获得。
+- **真实 LLM 验收**：Controller、schema、预算和 fallback 已实现，但真实外部 LLM 决策环仍受配置阻塞。
+- **Version Radar**：页面和本地流程已实现，真实 YouTube 搜索与写入仍需 OAuth/API 配置。
+- **Copy 持久性**：run id、SSE、取消和恢复在单个后端进程内工作，尚不支持服务重启后的任务恢复。
+- **公开分享链接**：部分平台只支持域名/ID 识别和页面可访问性检查，尚不能合法稳定地导入曲目。
+- **公网部署**：同域部署参数和安全边界已准备，但尚无公开域名、HTTPS 证书、生产 Token Store 或公开验收地址。
+
+未来工作包括：
+
+- 使用官方 MusicKit / Apple Music API 实现 Apple Music 账号连接、Library Playlist 读取和歌单创建/写入；手工 CSV 只作为备用入口，而不是目标主要体验；
+- 在获得明确官方资格后增加更多 Connector，不使用 Cookie、私有接口或逆向方案；
+- 为生产环境接入托管 Secret/KMS、共享任务存储与队列；
+- 完成 Spotify 与 Google 真人 OAuth、真实 YouTube 私有播放列表链接和公网部署验收。
+
+# Course Requirement
+
+MelodyPath 对课程 R1–R6 的当前审计状态如下。`PARTIAL` 表示代码或自动测试已存在，但真实外部配置验收尚未完成，不会被包装成 PASS。
+
+| 要求 | 状态 | 项目证据 |
+|---|---|---|
+| **R1 — Rust Core** | **PASS** | 导入、规范化、身份、Genre、元数据、种子、Last.fm Provider、推荐评分、去重、版本分类、Compare、Copy 匹配、权限和 Agent 状态均由 Rust 完成。 |
+| **R2 — User Interface** | **PASS** | React 页面覆盖 Analyze、Discover、换批、Compare、Version Radar、Copy Playlist、Agent、History、Settings 和平台状态。 |
+| **R3 — Configurable Model** | **PARTIAL** | Endpoint、模型、Temperature、Token、超时、重试、价格与费用上限可配置；真实外部 LLM 决策环仍未验收。 |
+| **R4 — Realtime Progress and Interrupt** | **PASS** | Agent 与 Copy 均有 SSE、取消和恢复；Copy 当前仅保证单进程会话恢复，不跨服务重启。 |
+| **R5 — History Management** | **PASS** | SQLite 保存 Agent goal、intent、data state、decision mode、plan、tool calls/results、状态、时间、warning 和 checkpoint，不保存 OAuth Secret。 |
+| **R6 — Token and Cost Statistics** | **PARTIAL** | Token/费用记录、估算和费用上限测试通过；当前真实 Agent 为 fallback，非零外部模型用量尚未验收。 |
+
+项目至少实现了以下场景定制，而不是把通用聊天 Agent 换一个名称：
+
+1. **领域知识库**：集中 Genre ontology、Ballad 系列桥梁、跨语言艺人身份和 Original/Live/Remix/Acoustic 等录音版本语义。
+2. **专用工具链**：真实导入 → 画像 → 种子选择 → Last.fm 候选 → Rust 评分/过滤 → 路线，以及双歌单 Compare 和 Copy 匹配工具。
+3. **定制 Prompt 与结构化输出校验**：模型只能返回 serde 校验的 `AgentDecision`，并只能选择 Tool Registry 白名单中的当前可用工具。
+4. **真实结果驱动的重规划**：候选为空、惊喜区不足或双方重合度变化，会改变下一工具，而不是始终执行相同脚本。
+
+MelodyPath 相比通用 Agent 的专用性体现在：它理解 Genre 距离、相似歌曲/艺人/标签关系、艺人别名、录音版本、源歌单排除、同艺人上限和平台数据政策；它能把每个推荐、比较和外部写入追溯到真实输入、Rust 工具结果与明确权限。LLM 负责高层决策和说明，音乐事实、评分、匹配与安全边界始终由可测试、可复现的 Rust 实现控制。

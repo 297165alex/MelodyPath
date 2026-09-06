@@ -1,11 +1,13 @@
 use super::{AddTracksOutcome, CreatedPlaylist, PlaylistWriter, status};
 use crate::{
+    alternate::{default_version_types, score_youtube_version_candidate, version_query_term},
     models::{
-        MatchCandidate, MatchStatus, PlatformTrackMatch, ProviderConfigurationStatus, Track,
-        VersionType, WriterStatus, YoutubeConnectionStatus, YoutubeImportResult,
-        YoutubeImportedPlaylist, YoutubePlaylistSummary,
+        AlternateVersionSearchResult, MatchCandidate, MatchStatus, PlatformTrackMatch,
+        ProviderConfigurationStatus, Track, VersionType, WriterStatus, YoutubeConnectionStatus,
+        YoutubeImportResult, YoutubeImportedPlaylist, YoutubePlaylistSummary,
     },
     normalize::{detect_version, normalize_text, token_similarity},
+    secure_store::SecureJsonStore,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -13,14 +15,14 @@ use base64::Engine;
 use rand::Rng;
 use regex::Regex;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, LazyLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::RwLock;
+use tokio::{sync::RwLock, time::sleep};
 
 const YOUTUBE_SCOPE: &str = "https://www.googleapis.com/auth/youtube.force-ssl";
 pub const DEFAULT_GOOGLE_REDIRECT_URI: &str = "http://127.0.0.1:3000/api/youtube/callback";
@@ -59,10 +61,12 @@ impl YoutubeConfig {
         Some(Self {
             client_id: nonempty_env("GOOGLE_CLIENT_ID")?,
             client_secret: nonempty_env("GOOGLE_CLIENT_SECRET")?,
-            redirect_uri: nonempty_env("GOOGLE_REDIRECT_URI")?,
+            redirect_uri: nonempty_env("GOOGLE_REDIRECT_URI")
+                .or_else(|| public_endpoint("/api/youtube/callback"))?,
             api_key: nonempty_env("YOUTUBE_API_KEY")?,
-            frontend_url: std::env::var("FRONTEND_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:5173".into()),
+            frontend_url: nonempty_env("FRONTEND_URL")
+                .or_else(|| nonempty_env("PUBLIC_BASE_URL"))
+                .unwrap_or_else(|| "http://127.0.0.1:5173".into()),
             authorize_url: "https://accounts.google.com/o/oauth2/v2/auth".into(),
             token_url: "https://oauth2.googleapis.com/token".into(),
             api_base_url: "https://www.googleapis.com/youtube/v3".into(),
@@ -70,7 +74,16 @@ impl YoutubeConfig {
     }
 }
 
-#[derive(Clone)]
+fn public_endpoint(path: &str) -> Option<String> {
+    let base = nonempty_env("PUBLIC_BASE_URL")?;
+    let parsed = reqwest::Url::parse(&base).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return None;
+    }
+    Some(format!("{}{}", base.trim_end_matches('/'), path))
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct YoutubeTokenSet {
     access_token: String,
     refresh_token: Option<String>,
@@ -110,11 +123,27 @@ pub struct YoutubePlaylistWriter {
     client: Client,
     pending_states: Arc<RwLock<HashMap<String, u64>>>,
     sessions: Arc<RwLock<HashMap<String, YoutubeTokenSet>>>,
+    session_store: Option<SecureJsonStore>,
 }
 
 impl YoutubePlaylistWriter {
     pub fn new() -> Self {
-        Self::from_config(YoutubeConfig::from_env(), Client::new())
+        let client = Client::builder()
+            .timeout(Duration::from_secs(12))
+            .build()
+            .unwrap_or_default();
+        let session_store = SecureJsonStore::for_oauth_provider("youtube");
+        let sessions = session_store
+            .as_ref()
+            .and_then(|store| store.load().ok())
+            .unwrap_or_default();
+        Self {
+            config: YoutubeConfig::from_env(),
+            client,
+            pending_states: Arc::new(RwLock::new(HashMap::new())),
+            sessions: Arc::new(RwLock::new(sessions)),
+            session_store,
+        }
     }
 
     fn from_config(config: Option<YoutubeConfig>, client: Client) -> Self {
@@ -123,6 +152,28 @@ impl YoutubePlaylistWriter {
             client,
             pending_states: Arc::new(RwLock::new(HashMap::new())),
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            session_store: None,
+        }
+    }
+
+    pub fn frontend_url(&self) -> String {
+        self.config
+            .as_ref()
+            .map(|config| config.frontend_url.clone())
+            .unwrap_or_else(|| {
+                std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://127.0.0.1:5173".into())
+            })
+    }
+
+    async fn persist_sessions(&self) -> Result<()> {
+        let Some(store) = &self.session_store else {
+            return Ok(());
+        };
+        let sessions = self.sessions.read().await;
+        if sessions.is_empty() {
+            store.remove()
+        } else {
+            store.save(&*sessions)
         }
     }
 
@@ -298,6 +349,7 @@ impl YoutubePlaylistWriter {
                 avatar_url,
             },
         );
+        self.persist_sessions().await?;
         Ok((session, config.frontend_url.clone()))
     }
 
@@ -329,7 +381,12 @@ impl YoutubePlaylistWriter {
                 channel_id: None,
                 display_name: None,
                 avatar_url: None,
-                message: "OAuth 已配置，请在 Google 官方页面授权。".into(),
+                message: if auth_session.is_some() {
+                    "YouTube 连接已失效，请重新连接。"
+                } else {
+                    "OAuth 已配置，请在 Google 官方页面授权。"
+                }
+                .into(),
                 policy_notice: YOUTUBE_POLICY_NOTICE.into(),
             },
         }
@@ -339,7 +396,11 @@ impl YoutubePlaylistWriter {
         let Some(session) = auth_session else {
             return false;
         };
-        self.sessions.write().await.remove(session).is_some()
+        let removed = self.sessions.write().await.remove(session).is_some();
+        if removed {
+            let _ = self.persist_sessions().await;
+        }
+        removed
     }
 
     async fn fetch_channel_profile(
@@ -425,6 +486,7 @@ impl YoutubePlaylistWriter {
             .write()
             .await
             .insert(session.into(), refreshed.clone());
+        self.persist_sessions().await?;
         Ok(refreshed)
     }
 
@@ -601,18 +663,69 @@ impl YoutubePlaylistWriter {
 
     async fn search_items(&self, access_token: &str, query: &str) -> Result<Vec<Value>> {
         let config = self.config.as_ref().context("YouTube OAuth 未配置")?;
+        let mut last_error = None;
+        for attempt in 0..=2_u32 {
+            let response = self
+                .client
+                .get(format!(
+                    "{}/search",
+                    config.api_base_url.trim_end_matches('/')
+                ))
+                .bearer_auth(access_token)
+                .query(&[
+                    ("part", "snippet"),
+                    ("type", "video"),
+                    ("maxResults", "5"),
+                    ("q", query),
+                    ("key", config.api_key.as_str()),
+                ])
+                .send()
+                .await;
+            match response {
+                Ok(response) if response.status().is_success() => {
+                    let payload: Value = response.json().await?;
+                    return Ok(payload
+                        .get("items")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default());
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    last_error = Some(anyhow::anyhow!("YouTube 搜索 HTTP {status}"));
+                    if !is_retryable_status(status) {
+                        break;
+                    }
+                }
+                Err(error) => last_error = Some(error.into()),
+            }
+            if attempt < 2 {
+                sleep(Duration::from_millis(180 * u64::from(attempt + 1))).await;
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("YouTube 搜索失败")))
+    }
+
+    async fn video_durations(
+        &self,
+        access_token: &str,
+        video_ids: &[String],
+    ) -> Result<HashMap<String, u32>> {
+        if video_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let config = self.config.as_ref().context("YouTube OAuth 未配置")?;
+        let joined_ids = video_ids.join(",");
         let payload: Value = self
             .client
             .get(format!(
-                "{}/search",
+                "{}/videos",
                 config.api_base_url.trim_end_matches('/')
             ))
             .bearer_auth(access_token)
             .query(&[
-                ("part", "snippet"),
-                ("type", "video"),
-                ("maxResults", "5"),
-                ("q", query),
+                ("part", "contentDetails"),
+                ("id", joined_ids.as_str()),
                 ("key", config.api_key.as_str()),
             ])
             .send()
@@ -623,8 +736,95 @@ impl YoutubePlaylistWriter {
         Ok(payload
             .get("items")
             .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default())
+            .into_iter()
+            .flatten()
+            .filter_map(|item| {
+                let id = item.get("id")?.as_str()?.to_string();
+                let duration = item
+                    .pointer("/contentDetails/duration")
+                    .and_then(Value::as_str)
+                    .and_then(parse_iso8601_duration_ms)?;
+                Some((id, duration))
+            })
+            .collect())
+    }
+
+    pub async fn search_alternate_versions(
+        &self,
+        source: &Track,
+        version_types: Vec<VersionType>,
+        auth_session: Option<&str>,
+    ) -> Result<AlternateVersionSearchResult> {
+        let token = self.token(auth_session).await?;
+        let selected: Vec<_> = if version_types.is_empty() {
+            default_version_types()
+        } else {
+            version_types
+        }
+        .into_iter()
+        .take(4)
+        .collect();
+        let requested: HashSet<_> = selected.iter().cloned().collect();
+        let mut seen = HashSet::new();
+        let mut candidates = Vec::new();
+        for version in selected {
+            let query = format!(
+                "{} {} {}",
+                source.artists.join(" "),
+                source.title,
+                version_query_term(&version)
+            );
+            for item in self.search_items(&token.access_token, &query).await? {
+                let Some(video_id) = item.pointer("/id/videoId").and_then(Value::as_str) else {
+                    continue;
+                };
+                if !seen.insert(video_id.to_string()) {
+                    continue;
+                }
+                let Some(raw_title) = item.pointer("/snippet/title").and_then(Value::as_str) else {
+                    continue;
+                };
+                let channel = item
+                    .pointer("/snippet/channelTitle")
+                    .and_then(Value::as_str)
+                    .unwrap_or("YouTube 频道");
+                if let Some(candidate) = score_youtube_version_candidate(
+                    source,
+                    raw_title,
+                    channel,
+                    &format!("https://www.youtube.com/watch?v={video_id}"),
+                    None,
+                    &requested,
+                ) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+        candidates.sort_by(|left, right| {
+            right
+                .match_confidence
+                .total_cmp(&left.match_confidence)
+                .then_with(|| left.title.cmp(&right.title))
+        });
+        candidates.truncate(12);
+        Ok(AlternateVersionSearchResult {
+            source_track: source.clone(),
+            provider: "YouTube Data API v3".into(),
+            status: if candidates.is_empty() {
+                "NO_VERIFIED_CANDIDATES"
+            } else {
+                "READY"
+            }
+            .into(),
+            message: if candidates.is_empty() {
+                "YouTube 搜索有响应，但没有通过基础歌名、艺人和版本语义校验的候选。"
+            } else {
+                "候选来自当前用户授权的 YouTube 官方搜索；所有结果均明确标记版本。"
+            }
+            .into(),
+            candidates,
+            is_mock: false,
+        })
     }
 }
 
@@ -684,12 +884,26 @@ impl PlaylistWriter for YoutubePlaylistWriter {
             });
         }
         let token = self.token(auth_session).await?;
-        let query = format!("{} {}", track.artists.join(" "), track.title);
-        let mut candidates: Vec<MatchCandidate> = self
-            .search_items(&token.access_token, &query)
-            .await?
+        let query = format!("{} {} official audio", track.artists.join(" "), track.title);
+        let items = self.search_items(&token.access_token, &query).await?;
+        let video_ids: Vec<_> = items
             .iter()
-            .filter_map(|item| youtube_candidate(track, item))
+            .filter_map(|item| item.pointer("/id/videoId").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect();
+        let durations = self
+            .video_durations(&token.access_token, &video_ids)
+            .await
+            .unwrap_or_default();
+        let mut candidates: Vec<MatchCandidate> = items
+            .iter()
+            .filter_map(|item| {
+                let duration = item
+                    .pointer("/id/videoId")
+                    .and_then(Value::as_str)
+                    .and_then(|id| durations.get(id).copied());
+                youtube_candidate(track, item, duration)
+            })
             .collect();
         candidates.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
         let best = candidates.first().cloned();
@@ -912,7 +1126,11 @@ pub(crate) fn youtube_track(item: &Value) -> Option<Track> {
     })
 }
 
-fn youtube_candidate(source: &Track, item: &Value) -> Option<MatchCandidate> {
+fn youtube_candidate(
+    source: &Track,
+    item: &Value,
+    duration_ms: Option<u32>,
+) -> Option<MatchCandidate> {
     let video_id = item.pointer("/id/videoId").and_then(Value::as_str)?;
     let raw_title = item.pointer("/snippet/title").and_then(Value::as_str)?;
     let channel = item
@@ -928,20 +1146,55 @@ fn youtube_candidate(source: &Track, item: &Value) -> Option<MatchCandidate> {
     } else {
         0.35
     };
-    let confidence =
-        (title_score * 0.62 + artist_score * 0.30 + version_score * 0.08).clamp(0.0, 1.0);
+    let duration_score = source
+        .duration_ms
+        .zip(duration_ms)
+        .map(|(source, target)| (1.0 - source.abs_diff(target) as f32 / 60_000.0).clamp(0.0, 1.0));
+    let official = channel.to_lowercase().contains("topic")
+        || channel.to_lowercase().contains("official")
+        || channel.to_lowercase().contains("vevo");
+    let mut confidence = title_score * 0.52
+        + artist_score * 0.28
+        + version_score * 0.11
+        + if official { 0.07 } else { 0.025 };
+    let mut weight = 0.98;
+    if let Some(duration) = duration_score {
+        confidence += duration * 0.02;
+        weight += 0.02;
+    }
+    let confidence = (confidence / weight).clamp(0.0, 1.0);
     Some(MatchCandidate {
         target_track_id: video_id.into(),
         title,
         artists,
         album: None,
+        duration_ms,
+        channel_name: Some(channel.into()),
+        official_status: if channel.to_lowercase().contains("topic") {
+            "topic_channel"
+        } else if channel.to_lowercase().contains("official")
+            || channel.to_lowercase().contains("vevo")
+        {
+            "official_channel"
+        } else {
+            "unverified"
+        }
+        .into(),
         target_url: Some(format!("https://www.youtube.com/watch?v={video_id}")),
         version_type: target_version,
         confidence,
         match_reason: format!(
-            "清理 Official Video/Lyrics 等标题噪声后：歌名 {:.0}% · 歌手 {:.0}%",
+            "清理标题噪声后：歌名 {:.0}% · 歌手 {:.0}% · 时长 {} · {}",
             title_score * 100.0,
-            artist_score * 100.0
+            artist_score * 100.0,
+            duration_score
+                .map(|value| format!("{:.0}%", value * 100.0))
+                .unwrap_or_else(|| "未知（不按 0）".into()),
+            if official {
+                "官方/Topic 信号"
+            } else {
+                "频道未验证"
+            }
         ),
         available_in_market: true,
     })
@@ -952,6 +1205,30 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_secs()
+}
+
+fn parse_iso8601_duration_ms(value: &str) -> Option<u32> {
+    let body = value.strip_prefix("PT")?;
+    let mut number = String::new();
+    let mut seconds = 0_u64;
+    for character in body.chars() {
+        if character.is_ascii_digit() {
+            number.push(character);
+            continue;
+        }
+        let parsed = number.parse::<u64>().ok()?;
+        number.clear();
+        match character {
+            'H' => seconds = seconds.saturating_add(parsed.saturating_mul(3_600)),
+            'M' => seconds = seconds.saturating_add(parsed.saturating_mul(60)),
+            'S' => seconds = seconds.saturating_add(parsed),
+            _ => return None,
+        }
+    }
+    if !number.is_empty() {
+        return None;
+    }
+    u32::try_from(seconds.saturating_mul(1_000)).ok()
 }
 
 fn random_token() -> String {
@@ -965,6 +1242,10 @@ fn nonempty_env(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
 }
 
 #[cfg(test)]
@@ -1033,5 +1314,22 @@ mod tests {
         let output = format!("{config:?}");
         assert!(!output.contains("client-secret-sensitive"));
         assert!(!output.contains("api-key-sensitive"));
+    }
+
+    #[test]
+    fn retries_only_rate_limits_and_server_errors() {
+        assert!(is_retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_retryable_status(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
+        assert!(!is_retryable_status(reqwest::StatusCode::BAD_REQUEST));
+        assert!(!is_retryable_status(reqwest::StatusCode::UNAUTHORIZED));
+    }
+
+    #[test]
+    fn parses_youtube_iso_duration_without_guessing() {
+        assert_eq!(parse_iso8601_duration_ms("PT3M25S"), Some(205_000));
+        assert_eq!(parse_iso8601_duration_ms("PT1H2M3S"), Some(3_723_000));
+        assert_eq!(parse_iso8601_duration_ms("unknown"), None);
     }
 }

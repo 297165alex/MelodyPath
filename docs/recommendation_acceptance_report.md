@@ -1,8 +1,42 @@
 # MelodyPath 真实推荐最终验收报告
 
-验收日期：2026-08-31  
+验收日期：2026-09-05
 项目目录：`C:\Users\user\Downloads\melody-path-local-analysis`  
-最终状态：**阶段 2 未通过；已停止，未执行阶段 2.5、阶段 3 或阶段 4。**
+最终状态：**REAL VERIFIED。五份真实文件均已在浏览器中串行完成导入、确认、分析与真实 Last.fm 推荐；全部 `is_demo=false`，每区首屏 4 首。**
+
+## 2026-09-05 最终 Provider 回归
+
+安全启动脚本从 Windows User scope 向后端子进程注入 Last.fm 配置；页面 Provider 为 `Last.fm Music Discovery API`。以下仅记录聚合遥测，不复制私人歌单曲目内容：
+
+| 文件 | 解析/参与 | Genre | Energy | 成功/失败种子 | 原始候选 | 版本后 | 去重后 | 排除源后 | 艺人上限后 | 舒适/拓展/惊喜池 | Tag L1/L2 | Genre桥梁/第二跳艺人 | 请求/重试 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Japanese.csv | 76/76 | 72/76 | 76/76 | 10/0 | 234 | 233 | 221 | 209 | 168 | 127/16/25 | 0/20 | 20/12 | 43/0 |
+| Korean.csv | 224/224 | 221/224 | 224/224 | 10/0 | 291 | 291 | 235 | 178 | 136 | 104/16/16 | 0/20 | 20/12 | 42/0 |
+| English.csv | 435/435 | 197/435 | 435/435 | 10/0 | 262 | 252 | 236 | 178 | 130 | 106/13/11 | 0/10 | 10/12 | 39/0 |
+| Chinese.csv | 781/781 | 775/781 | 781/781 | 10/0 | 174 | 173 | 148 | 120 | 80 | 46/14/20 | 0/20 | 20/12 | 42/0 |
+| Happy_Mix.csv | 50/50 | 22/50 | 50/50 | 10/0 | 272 | 267 | 252 | 240 | 175 | 138/15/22 | 0/20 | 20/12 | 4/0（其余命中进程缓存） |
+
+- 五份文件的首屏推荐匿名摘要均不同；没有固定 Demo 结果。
+- Japanese 的“换一批”已浏览器验证，第二批与第一批 0 重合，直接使用现有候选池。
+- 五份文件的舒适、拓展、惊喜首屏均为 4 首；惊喜候选保留标签两跳、Genre Graph 桥梁或第二跳相似艺人来源。
+- 版本过滤、艺人别名、源歌单排除和 `source_was_modified=false` 由确定性 Rust 与专项测试约束；真实模式没有 Apple 关键词搜索、固定歌曲或 Demo 回退。
+- Last.fm 原始 similarity、系统综合 score 与 UI confidence 分字段展示，不强制写成同一数值。
+
+## 0. 2026-09-04 修复轮次
+
+本轮只针对原报告确认的版本过滤、艺术家别名和流水线遥测缺口进行修复，没有调整 Last.fm 候选生成架构，也没有加入 Apple 关键词或 Demo 兜底。
+
+已完成：
+
+- 集中式版本解析可识别 Remix、Live、Concert、Bonus Track、Acoustic、Unplugged、Remastered、Sped Up、Slowed、Radio Edit、Instrumental、Karaoke、Cover、Reaction 和 Nightcore。
+- 普通推荐会在评分前过滤派生版本，因此 `Dancin - Krono Remix` 和 `Bang Bang (Bonus Track)` 不再进入普通推荐；源歌单明确是 Remix 时，Original 仍保留独立版本语义。
+- 集中式艺人身份层统一稳定 ID、规范化名称和受控别名；`Jay Chou / 周杰倫 / 周杰伦`、`JJ Lin / 林俊傑 / 林俊杰` 能参与源歌单排除。
+- 响应新增原始、版本过滤、规范化、去重、源歌单排除、艺人上限、三区和 tag 两层的独立统计。
+- UI 分开显示 Last.fm 原始 similarity、系统综合 score 与 UI confidence，并标明候选是否已在源歌单。
+
+自动验证：`cargo check --workspace`、62 项 Rust 测试、前端 lint 和 build 均通过。新增测试直接覆盖上述四个历史失败案例和各阶段统计。
+
+真实回归状态：`BLOCKED_EXTERNAL_CONFIGURATION`。当前没有运行中的服务，且仅通过不泄露内容的布尔检查确认 Process/User/Machine 作用域均没有可用的 `LASTFM_API_KEY`。因此尚未重新声称 Japanese/Korean/English/Chinese 的真实联网验收通过；下面保留的表格是 2026-08-31 修复前基线，不能视为修复后的结果。
 
 ## 1. 检查点
 

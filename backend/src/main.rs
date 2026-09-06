@@ -1,13 +1,17 @@
 mod agent;
+mod alternate;
 mod demo;
 mod engine;
 mod genre;
+mod identity;
 mod import;
 mod metadata;
 mod models;
 mod normalize;
 mod platforms;
 mod recommendation;
+mod secure_store;
+mod transfer;
 mod writers;
 
 use axum::{
@@ -28,7 +32,16 @@ use models::{
     YoutubeImportRequest,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, convert::Infallible, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    convert::Infallible,
+    path::PathBuf,
+    sync::{
+        Arc, RwLock as StdRwLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use tokio::{net::TcpListener, sync::RwLock, time::sleep};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -49,7 +62,19 @@ struct AppState {
     platforms: platforms::PlatformService,
     agent: agent::AgentService,
     metadata: metadata::MetadataService,
+    analyses: agent::AnalysisRegistry,
     imports: Arc<RwLock<HashMap<String, import::StoredImport>>>,
+    transfer_previews: Arc<RwLock<HashMap<String, models::TransferPreview>>>,
+    transfer_runs: Arc<StdRwLock<HashMap<String, StoredTransferRun>>>,
+}
+
+#[derive(Clone)]
+struct StoredTransferRun {
+    public: models::TransferRun,
+    preview: models::TransferPreview,
+    request: models::TransferExecuteRequest,
+    auth_session: Option<String>,
+    cancelled: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -127,6 +152,18 @@ fn app(state: AppState) -> Router {
         .route("/api/analyze/manual", post(analyze_manual))
         .route("/api/imports/preview", post(preview_import))
         .route("/api/imports/{id}/analyze", post(analyze_import))
+        .route("/api/compare", post(compare_analyses))
+        .route(
+            "/api/alternate-versions/search",
+            post(search_alternate_versions),
+        )
+        .route("/api/transfers/preview", post(transfer_preview))
+        .route("/api/transfers/execute", post(transfer_execute))
+        .route("/api/transfers/runs", post(create_transfer_run))
+        .route("/api/transfers/runs/{id}", get(get_transfer_run))
+        .route("/api/transfers/runs/{id}/events", get(transfer_run_events))
+        .route("/api/transfers/runs/{id}/cancel", post(cancel_transfer_run))
+        .route("/api/transfers/runs/{id}/resume", post(resume_transfer_run))
         .route("/api/writers/status", get(writer_statuses))
         .route("/api/platforms/capabilities", get(platform_capabilities))
         .route("/api/config/spotify", get(spotify_configuration))
@@ -150,6 +187,7 @@ fn app(state: AppState) -> Router {
         .route("/api/tasks/{id}", get(get_task))
         .route("/api/tasks/{id}/events", get(task_events))
         .route("/api/tasks/{id}/cancel", post(cancel_task))
+        .route("/api/tasks/{id}/resume", post(resume_task))
         .route("/api/spotify/authorize", get(spotify_authorize))
         .route("/api/spotify/callback", get(spotify_callback))
         .route("/api/spotify/me", get(spotify_me))
@@ -181,6 +219,8 @@ async fn main() -> anyhow::Result<()> {
     let database_path = std::env::var("MELODYPATH_DB_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("melody_path.db"));
+    let analyses = Arc::new(RwLock::new(HashMap::new()));
+    let metadata = metadata::MetadataService::new();
     let state = AppState {
         previews: Arc::new(RwLock::new(HashMap::new())),
         downloads: Arc::new(RwLock::new(HashMap::new())),
@@ -188,9 +228,12 @@ async fn main() -> anyhow::Result<()> {
         youtube: writers::youtube::YoutubePlaylistWriter::new(),
         apple: AppleMusicConnector::new(),
         platforms: platforms::PlatformService::new(),
-        agent: agent::AgentService::new(database_path).await?,
-        metadata: metadata::MetadataService::new(),
+        agent: agent::AgentService::new(database_path, analyses.clone()).await?,
+        metadata,
+        analyses,
         imports: Arc::new(RwLock::new(HashMap::new())),
+        transfer_previews: Arc::new(RwLock::new(HashMap::new())),
+        transfer_runs: Arc::new(StdRwLock::new(HashMap::new())),
     };
     let address = std::env::var("MELODYPATH_BIND").unwrap_or_else(|_| "127.0.0.1:3000".into());
     let listener = TcpListener::bind(&address).await?;
@@ -224,7 +267,13 @@ async fn analyze_manual(
         &request.text,
     )
     .map_err(ApiError::bad_request)?;
-    Ok(Json(state.metadata.analyze(playlist).await))
+    let analysis = state.metadata.analyze(playlist).await;
+    state
+        .analyses
+        .write()
+        .await
+        .insert(analysis.analysis_id.clone(), analysis.clone());
+    Ok(Json(analysis))
 }
 
 async fn preview_import(
@@ -252,18 +301,667 @@ async fn analyze_import(
         .get(&id)
         .cloned()
         .ok_or_else(|| ApiError::not_found("导入预览不存在或服务已重启，请重新解析"))?;
-    Ok(Json(
-        state
-            .metadata
-            .analyze_imported(
-                imported.name,
-                imported.source_label,
-                imported.data_state,
-                imported.total_rows,
-                imported.tracks,
-            )
-            .await,
+    let mut analysis = state
+        .metadata
+        .analyze_imported(
+            imported.name,
+            imported.source_label,
+            imported.data_state,
+            imported.total_rows,
+            imported.tracks,
+        )
+        .await;
+    analysis.analysis_id = id;
+    state
+        .analyses
+        .write()
+        .await
+        .insert(analysis.analysis_id.clone(), analysis.clone());
+    Ok(Json(analysis))
+}
+
+async fn compare_analyses(
+    Json(request): Json<models::CompareRequest>,
+) -> Result<Json<models::ComparisonReport>, ApiError> {
+    if request.analysis_a.playlist.tracks.is_empty()
+        || request.analysis_b.playlist.tracks.is_empty()
+    {
+        return Err(ApiError::bad_request("两份歌单都必须至少包含一首歌曲"));
+    }
+    if request.save_locally {
+        return Err(ApiError::bad_request(
+            "当前临时比较不会默认保存；本地保存需要在后续界面中单独明确确认",
+        ));
+    }
+    Ok(Json(engine::compare_analyses(
+        &request.analysis_a,
+        &request.analysis_b,
+    )))
+}
+
+async fn search_alternate_versions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<models::AlternateVersionSearchRequest>,
+) -> Json<models::AlternateVersionSearchResult> {
+    if request.use_mock {
+        return Json(alternate::mock_version_search(
+            request.track,
+            request.version_types,
+        ));
+    }
+    let session = youtube_auth_session(&headers);
+    let connection = state.youtube.connection_status(session.as_deref()).await;
+    if !connection.connected {
+        return Json(models::AlternateVersionSearchResult {
+            source_track: request.track,
+            provider: "YouTube Data API v3".into(),
+            status: "BLOCKED_EXTERNAL_AUTH".into(),
+            message: if connection.configured {
+                "需要用户在 Google 官方页面完成 YouTube OAuth；没有用 Mock 冒充真实搜索。"
+            } else {
+                "Google OAuth / YouTube Data API 配置不完整；没有发起搜索，也没有用 Mock 冒充真实搜索。"
+            }
+            .into(),
+            candidates: Vec::new(),
+            is_mock: false,
+        });
+    }
+    match state
+        .youtube
+        .search_alternate_versions(&request.track, request.version_types, session.as_deref())
+        .await
+    {
+        Ok(result) => Json(result),
+        Err(_) => Json(models::AlternateVersionSearchResult {
+            source_track: request.track,
+            provider: "YouTube Data API v3".into(),
+            status: "PROVIDER_ERROR".into(),
+            message: "YouTube 官方搜索暂时失败；没有记录响应正文，也没有回退到 Mock。".into(),
+            candidates: Vec::new(),
+            is_mock: false,
+        }),
+    }
+}
+
+async fn transfer_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<models::TransferPreviewRequest>,
+) -> Result<Json<models::TransferPreview>, ApiError> {
+    if request.tracks.is_empty() {
+        return Err(ApiError::bad_request("迁移源歌单不能为空"));
+    }
+    let preview = if request.use_mock {
+        transfer::build_preview(
+            &transfer::MockDestinationConnector::default(),
+            request.playlist_name,
+            &request.tracks,
+            request.allow_alternate_versions,
+        )
+        .await
+    } else {
+        let (connected, configured, provider) = match request.destination_platform.as_str() {
+            "youtube" => {
+                let status = state
+                    .youtube
+                    .connection_status(youtube_auth_session(&headers).as_deref())
+                    .await;
+                (status.connected, status.configured, "YouTube Data API v3")
+            }
+            "spotify" => {
+                let status = state
+                    .spotify
+                    .connection_status(auth_session(&headers).as_deref())
+                    .await;
+                (status.connected, status.configured, "Spotify Web API")
+            }
+            _ => {
+                return Err(ApiError::bad_request(
+                    "目标平台没有已验证的官方播放列表 Writer",
+                ));
+            }
+        };
+        if !connected {
+            models::TransferPreview {
+                preview_id: Uuid::new_v4().to_string(),
+                playlist_name: request.playlist_name,
+                source_count: request.tracks.len(),
+                high_confidence_count: 0,
+                ambiguous_count: 0,
+                unmatched_count: request.tracks.len(),
+                alternate_fallback_count: 0,
+                matches: Vec::new(),
+                provider: provider.into(),
+                destination_platform: request.destination_platform,
+                status: "BLOCKED_EXTERNAL_AUTH".into(),
+                message: if configured {
+                    "需要用户在目标平台官方页面完成 OAuth 后才能搜索和写入；没有用 Mock 冒充连接。"
+                } else {
+                    "目标平台 OAuth 配置不完整；没有搜索、写入或切换到 Mock。"
+                }
+                .into(),
+                requires_explicit_confirmation: true,
+                source_was_modified: false,
+                is_mock: false,
+            }
+        } else {
+            match request.destination_platform.as_str() {
+                "youtube" => {
+                    transfer::build_preview(
+                        &transfer::YoutubeDestinationConnector::new(
+                            state.youtube.clone(),
+                            youtube_auth_session(&headers),
+                        ),
+                        request.playlist_name,
+                        &request.tracks,
+                        request.allow_alternate_versions,
+                    )
+                    .await
+                }
+                "spotify" => {
+                    transfer::build_preview(
+                        &transfer::SpotifyDestinationConnector::new(
+                            state.spotify.clone(),
+                            auth_session(&headers),
+                        ),
+                        request.playlist_name,
+                        &request.tracks,
+                        request.allow_alternate_versions,
+                    )
+                    .await
+                }
+                _ => unreachable!(),
+            }
+        }
+    };
+    state
+        .transfer_previews
+        .write()
+        .await
+        .insert(preview.preview_id.clone(), preview.clone());
+    Ok(Json(preview))
+}
+
+async fn transfer_execute(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<models::TransferExecuteRequest>,
+) -> Result<Json<models::TransferResult>, ApiError> {
+    if request.privacy != "private" {
+        return Err(ApiError::bad_request("当前 MVP 只创建新的私有目标播放列表"));
+    }
+    let preview = state
+        .transfer_previews
+        .read()
+        .await
+        .get(&request.preview_id)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found("迁移预览不存在或服务已重启"))?;
+    if preview.status == "BLOCKED_EXTERNAL_AUTH" {
+        return Err(ApiError::unauthorized(preview.message));
+    }
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let mut result = if preview.is_mock {
+        transfer::execute_transfer(
+            &transfer::MockDestinationConnector::default(),
+            &preview,
+            request.confirmed,
+            &request.selections,
+            &cancelled,
+        )
+        .await
+    } else {
+        match preview.destination_platform.as_str() {
+            "youtube" => {
+                let session = youtube_auth_session(&headers);
+                if !state
+                    .youtube
+                    .connection_status(session.as_deref())
+                    .await
+                    .connected
+                {
+                    return Err(ApiError::unauthorized(
+                        "YouTube OAuth 会话不存在或已过期；未创建播放列表",
+                    ));
+                }
+                transfer::execute_transfer(
+                    &transfer::YoutubeDestinationConnector::new(state.youtube.clone(), session),
+                    &preview,
+                    request.confirmed,
+                    &request.selections,
+                    &cancelled,
+                )
+                .await
+            }
+            "spotify" => {
+                let session = auth_session(&headers);
+                if !state
+                    .spotify
+                    .connection_status(session.as_deref())
+                    .await
+                    .connected
+                {
+                    return Err(ApiError::unauthorized(
+                        "Spotify OAuth 会话不存在或已过期；未创建播放列表",
+                    ));
+                }
+                transfer::execute_transfer(
+                    &transfer::SpotifyDestinationConnector::new(state.spotify.clone(), session),
+                    &preview,
+                    request.confirmed,
+                    &request.selections,
+                    &cancelled,
+                )
+                .await
+            }
+            _ => return Err(ApiError::bad_request("迁移预览的目标平台无可用 Writer")),
+        }
+    }
+    .map_err(|error| ApiError::bad_request(error.to_string()))?;
+
+    let csv_id = Uuid::new_v4().to_string();
+    let json_id = Uuid::new_v4().to_string();
+    let csv_bytes = transfer_report_csv(&result).map_err(ApiError::internal)?;
+    let json_bytes = serde_json::to_vec_pretty(&result).map_err(ApiError::internal)?;
+    let mut downloads = state.downloads.write().await;
+    downloads.insert(
+        csv_id.clone(),
+        DownloadArtifact {
+            filename: format!("transfer-report-{}.csv", result.run_id),
+            content_type: "text/csv; charset=utf-8".into(),
+            bytes: csv_bytes,
+        },
+    );
+    downloads.insert(
+        json_id.clone(),
+        DownloadArtifact {
+            filename: format!("transfer-report-{}.json", result.run_id),
+            content_type: "application/json; charset=utf-8".into(),
+            bytes: json_bytes,
+        },
+    );
+    result.report_csv_url = Some(format!("/api/exports/{csv_id}/download"));
+    result.report_json_url = Some(format!("/api/exports/{json_id}/download"));
+    Ok(Json(result))
+}
+
+async fn create_transfer_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<models::TransferExecuteRequest>,
+) -> Result<(StatusCode, Json<models::TransferRun>), ApiError> {
+    if request.privacy != "private" {
+        return Err(ApiError::bad_request("当前 MVP 只创建新的私有目标播放列表"));
+    }
+    let preview = state
+        .transfer_previews
+        .read()
+        .await
+        .get(&request.preview_id)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found("复制预览不存在或服务已重启"))?;
+    if preview.status == "BLOCKED_EXTERNAL_AUTH" {
+        return Err(ApiError::unauthorized(preview.message));
+    }
+    transfer::validate_transfer_execution(&preview, request.confirmed, &request.selections)
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let auth_session = destination_auth_session(&headers, &preview.destination_platform);
+    let connector = transfer_connector(&state, &preview, auth_session.clone()).await?;
+    let timestamp = unix_timestamp();
+    let id = Uuid::new_v4().to_string();
+    let run = models::TransferRun {
+        id: id.clone(),
+        preview_id: preview.preview_id.clone(),
+        destination_platform: preview.destination_platform.clone(),
+        status: "QUEUED".into(),
+        processed_count: 0,
+        source_count: preview.source_count,
+        progress: 0.0,
+        result: None,
+        error: None,
+        is_mock: preview.is_mock,
+        revision: 1,
+        created_at: timestamp,
+        updated_at: timestamp,
+    };
+    state
+        .transfer_runs
+        .write()
+        .map_err(ApiError::internal)?
+        .insert(
+            id.clone(),
+            StoredTransferRun {
+                public: run.clone(),
+                preview,
+                request,
+                auth_session,
+                cancelled: Arc::new(AtomicBool::new(false)),
+            },
+        );
+    spawn_transfer_execution(state, id, connector, false);
+    Ok((StatusCode::ACCEPTED, Json(run)))
+}
+
+async fn get_transfer_run(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<models::TransferRun>, ApiError> {
+    let run = state
+        .transfer_runs
+        .read()
+        .map_err(ApiError::internal)?
+        .get(&id)
+        .map(|stored| stored.public.clone())
+        .ok_or_else(|| ApiError::not_found("复制任务不存在或服务已重启"))?;
+    Ok(Json(run))
+}
+
+async fn cancel_transfer_run(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<models::TransferRun>, ApiError> {
+    let mut runs = state.transfer_runs.write().map_err(ApiError::internal)?;
+    let stored = runs
+        .get_mut(&id)
+        .ok_or_else(|| ApiError::not_found("复制任务不存在或服务已重启"))?;
+    if matches!(stored.public.status.as_str(), "COMPLETED" | "CANCELLED") {
+        return Ok(Json(stored.public.clone()));
+    }
+    stored.cancelled.store(true, Ordering::SeqCst);
+    stored.public.status = "CANCELLING".into();
+    stored.public.updated_at = unix_timestamp();
+    stored.public.revision += 1;
+    Ok(Json(stored.public.clone()))
+}
+
+async fn resume_transfer_run(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<models::TransferRun>, ApiError> {
+    let (preview, auth_session) = {
+        let mut runs = state.transfer_runs.write().map_err(ApiError::internal)?;
+        let stored = runs
+            .get_mut(&id)
+            .ok_or_else(|| ApiError::not_found("复制任务不存在或服务已重启"))?;
+        if !matches!(stored.public.status.as_str(), "FAILED" | "CANCELLED") {
+            return Err(ApiError::bad_request(
+                "只有 FAILED 或 CANCELLED 复制任务可以恢复",
+            ));
+        }
+        stored.cancelled = Arc::new(AtomicBool::new(false));
+        stored.public.status = "QUEUED".into();
+        stored.public.error = None;
+        stored.public.updated_at = unix_timestamp();
+        stored.public.revision += 1;
+        (stored.preview.clone(), stored.auth_session.clone())
+    };
+    let connector = transfer_connector(&state, &preview, auth_session).await?;
+    spawn_transfer_execution(state.clone(), id.clone(), connector, true);
+    get_transfer_run(State(state), Path(id)).await
+}
+
+async fn transfer_run_events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !state
+        .transfer_runs
+        .read()
+        .map_err(ApiError::internal)?
+        .contains_key(&id)
+    {
+        return Err(ApiError::not_found("复制任务不存在或服务已重启"));
+    }
+    let runs = state.transfer_runs.clone();
+    let events = async_stream::stream! {
+        let mut last_revision = 0_u64;
+        loop {
+            let current = runs.read().ok().and_then(|items| items.get(&id).map(|stored| stored.public.clone()));
+            let Some(run) = current else { break; };
+            if run.revision != last_revision {
+                last_revision = run.revision;
+                let terminal = matches!(run.status.as_str(), "COMPLETED" | "FAILED" | "CANCELLED");
+                match Event::default().event("transfer").json_data(&run) {
+                    Ok(event) => yield Ok::<Event, Infallible>(event),
+                    Err(_) => break,
+                }
+                if terminal { break; }
+            }
+            sleep(Duration::from_millis(250)).await;
+        }
+    };
+    Ok(Sse::new(events).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(10))
+            .text("keep-alive"),
     ))
+}
+
+async fn transfer_connector(
+    state: &AppState,
+    preview: &models::TransferPreview,
+    auth_session: Option<String>,
+) -> Result<Arc<dyn transfer::DestinationConnector>, ApiError> {
+    if preview.is_mock {
+        return Ok(Arc::new(transfer::MockDestinationConnector::default()));
+    }
+    match preview.destination_platform.as_str() {
+        "youtube" => {
+            if !state
+                .youtube
+                .connection_status(auth_session.as_deref())
+                .await
+                .connected
+            {
+                return Err(ApiError::unauthorized(
+                    "YouTube OAuth 会话不存在或已过期；未创建播放列表",
+                ));
+            }
+            Ok(Arc::new(transfer::YoutubeDestinationConnector::new(
+                state.youtube.clone(),
+                auth_session,
+            )))
+        }
+        "spotify" => {
+            if !state
+                .spotify
+                .connection_status(auth_session.as_deref())
+                .await
+                .connected
+            {
+                return Err(ApiError::unauthorized(
+                    "Spotify OAuth 会话不存在或已过期；未创建播放列表",
+                ));
+            }
+            Ok(Arc::new(transfer::SpotifyDestinationConnector::new(
+                state.spotify.clone(),
+                auth_session,
+            )))
+        }
+        _ => Err(ApiError::bad_request("复制预览的目标平台没有已验证 Writer")),
+    }
+}
+
+fn spawn_transfer_execution(
+    state: AppState,
+    id: String,
+    connector: Arc<dyn transfer::DestinationConnector>,
+    resume: bool,
+) {
+    tokio::spawn(async move {
+        let Some((preview, request, cancelled, previous)) =
+            state.transfer_runs.write().ok().and_then(|mut runs| {
+                let stored = runs.get_mut(&id)?;
+                stored.public.status = "RUNNING".into();
+                stored.public.updated_at = unix_timestamp();
+                stored.public.revision += 1;
+                Some((
+                    stored.preview.clone(),
+                    stored.request.clone(),
+                    stored.cancelled.clone(),
+                    stored.public.result.clone(),
+                ))
+            })
+        else {
+            return;
+        };
+        if cancelled.load(Ordering::SeqCst) {
+            update_transfer_run_terminal(&state, &id, "CANCELLED", None, None);
+            return;
+        }
+        let progress_runs = state.transfer_runs.clone();
+        let progress_id = id.clone();
+        let on_progress = move |snapshot: &models::TransferResult| {
+            if let Ok(mut runs) = progress_runs.write()
+                && let Some(stored) = runs.get_mut(&progress_id)
+            {
+                let mut snapshot = snapshot.clone();
+                snapshot.run_id = progress_id.clone();
+                stored.public.status = snapshot.status.clone();
+                stored.public.processed_count = snapshot.results.len();
+                stored.public.progress = snapshot.progress;
+                stored.public.result = Some(snapshot);
+                stored.public.updated_at = unix_timestamp();
+                stored.public.revision += 1;
+            }
+        };
+        let outcome = if resume
+            && previous
+                .as_ref()
+                .and_then(|item| item.playlist_id.as_ref())
+                .is_some()
+        {
+            transfer::resume_transfer_with_progress(
+                connector.as_ref(),
+                &preview,
+                previous.as_ref().expect("checked above"),
+                request.confirmed,
+                &request.selections,
+                cancelled.as_ref(),
+                Some(&on_progress),
+            )
+            .await
+        } else {
+            transfer::execute_transfer_with_progress(
+                connector.as_ref(),
+                &preview,
+                request.confirmed,
+                &request.selections,
+                cancelled.as_ref(),
+                Some(&on_progress),
+            )
+            .await
+        };
+        match outcome {
+            Ok(mut result) => {
+                result.run_id = id.clone();
+                if let Err(error) = attach_transfer_reports(&state, &mut result).await {
+                    tracing::warn!(error = %error, "failed to prepare transfer report");
+                }
+                let status = result.status.clone();
+                update_transfer_run_terminal(&state, &id, &status, Some(result), None);
+            }
+            Err(error) => {
+                update_transfer_run_terminal(
+                    &state,
+                    &id,
+                    "FAILED",
+                    previous,
+                    Some(error.to_string()),
+                );
+            }
+        }
+    });
+}
+
+fn update_transfer_run_terminal(
+    state: &AppState,
+    id: &str,
+    status: &str,
+    result: Option<models::TransferResult>,
+    error: Option<String>,
+) {
+    if let Ok(mut runs) = state.transfer_runs.write()
+        && let Some(stored) = runs.get_mut(id)
+    {
+        stored.public.status = status.into();
+        if let Some(result) = result {
+            stored.public.processed_count = result.results.len();
+            stored.public.progress = result.progress;
+            stored.public.result = Some(result);
+        }
+        stored.public.error = error;
+        stored.public.updated_at = unix_timestamp();
+        stored.public.revision += 1;
+    }
+}
+
+async fn attach_transfer_reports(
+    state: &AppState,
+    result: &mut models::TransferResult,
+) -> anyhow::Result<()> {
+    let csv_id = Uuid::new_v4().to_string();
+    let json_id = Uuid::new_v4().to_string();
+    let csv_bytes = transfer_report_csv(result)?;
+    let json_bytes = serde_json::to_vec_pretty(result)?;
+    let mut downloads = state.downloads.write().await;
+    downloads.insert(
+        csv_id.clone(),
+        DownloadArtifact {
+            filename: format!("copy-report-{}.csv", result.run_id),
+            content_type: "text/csv; charset=utf-8".into(),
+            bytes: csv_bytes,
+        },
+    );
+    downloads.insert(
+        json_id.clone(),
+        DownloadArtifact {
+            filename: format!("copy-report-{}.json", result.run_id),
+            content_type: "application/json; charset=utf-8".into(),
+            bytes: json_bytes,
+        },
+    );
+    result.report_csv_url = Some(format!("/api/exports/{csv_id}/download"));
+    result.report_json_url = Some(format!("/api/exports/{json_id}/download"));
+    Ok(())
+}
+
+fn destination_auth_session(headers: &HeaderMap, destination: &str) -> Option<String> {
+    match destination {
+        "youtube" => youtube_auth_session(headers),
+        "spotify" => auth_session(headers),
+        _ => None,
+    }
+}
+
+fn unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+fn transfer_report_csv(result: &models::TransferResult) -> anyhow::Result<Vec<u8>> {
+    let mut writer = csv::Writer::from_writer(Vec::new());
+    writer.write_record([
+        "source_title",
+        "source_artists",
+        "target_id",
+        "status",
+        "error",
+    ])?;
+    for item in &result.results {
+        let artists = item.source_track.artists.join("; ");
+        writer.write_record([
+            item.source_track.title.as_str(),
+            artists.as_str(),
+            item.target_id.as_deref().unwrap_or(""),
+            item.status.as_str(),
+            item.error.as_deref().unwrap_or(""),
+        ])?;
+    }
+    Ok(writer.into_inner()?)
 }
 
 async fn get_settings(State(state): State<AppState>) -> Json<models::AgentSettings> {
@@ -321,6 +1019,15 @@ async fn cancel_task(
     })?))
 }
 
+async fn resume_task(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<models::AgentTask>, ApiError> {
+    Ok(Json(state.agent.resume(&id).await.map_err(|error| {
+        ApiError::bad_request(error.to_string())
+    })?))
+}
+
 async fn task_events(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -342,7 +1049,7 @@ async fn task_events(
                 Ok(Some(task)) => {
                     if task.revision != last_revision {
                         last_revision = task.revision;
-                        let terminal = matches!(task.status.as_str(), "completed" | "failed" | "cancelled");
+                        let terminal = matches!(task.status.as_str(), "COMPLETED" | "FAILED" | "CANCELLED" | "BLOCKED_EXTERNAL_AUTH");
                         match Event::default().event("task").json_data(&task) {
                             Ok(event) => yield Ok::<Event, Infallible>(event),
                             Err(_) => break,
@@ -539,12 +1246,9 @@ async fn spotify_disconnect(
         "message": "本地 Spotify token 已删除；如需撤销应用授权，也可在 Spotify 账号的应用管理中操作。"
     }))
     .into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        HeaderValue::from_static(
-            "melody_spotify_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
-        ),
-    );
+    if let Ok(cookie) = HeaderValue::from_str(&session_cookie("melody_spotify_session", "", 0)) {
+        response.headers_mut().insert(header::SET_COOKIE, cookie);
+    }
     Ok(response)
 }
 
@@ -605,12 +1309,9 @@ async fn youtube_disconnect(
         "message": "本地 Google/YouTube token 已删除；如需撤销授权，也可前往 Google 账号的第三方应用管理。"
     }))
     .into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        HeaderValue::from_static(
-            "melody_youtube_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
-        ),
-    );
+    if let Ok(cookie) = HeaderValue::from_str(&session_cookie("melody_youtube_session", "", 0)) {
+        response.headers_mut().insert(header::SET_COOKIE, cookie);
+    }
     Ok(response)
 }
 
@@ -626,35 +1327,29 @@ async fn youtube_authorize(State(state): State<AppState>) -> Result<Redirect, Ap
 async fn youtube_callback(
     State(app): State<AppState>,
     Query(query): Query<SpotifyCallback>,
-) -> Result<Response, ApiError> {
-    if let Some(error) = query.error {
-        return Err(ApiError::bad_request(format!(
-            "Google/YouTube 授权未完成：{error}"
-        )));
+) -> Response {
+    let frontend = app.youtube.frontend_url();
+    if query.error.is_some() {
+        return oauth_redirect(&frontend, "youtube", "error", "authorization_cancelled");
     }
-    let (session, frontend) = app
-        .youtube
-        .complete_authorization(
-            query
-                .code
-                .as_deref()
-                .ok_or_else(|| ApiError::bad_request("回调缺少 code"))?,
-            query
-                .state
-                .as_deref()
-                .ok_or_else(|| ApiError::bad_request("回调缺少 state"))?,
-        )
-        .await
-        .map_err(|error| ApiError::bad_request(error.to_string()))?;
-    let cookie =
-        format!("melody_youtube_session={session}; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800");
-    let mut response =
-        Redirect::temporary(&format!("{frontend}/?youtube=connected")).into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&cookie).map_err(ApiError::internal)?,
-    );
-    Ok(response)
+    let Some(code) = query.code.as_deref() else {
+        return oauth_redirect(&frontend, "youtube", "error", "missing_code");
+    };
+    let Some(state) = query.state.as_deref() else {
+        return oauth_redirect(&frontend, "youtube", "error", "missing_state");
+    };
+    let (session, frontend) = match app.youtube.complete_authorization(code, state).await {
+        Ok(result) => result,
+        Err(_) => {
+            return oauth_redirect(&frontend, "youtube", "error", "authorization_failed");
+        }
+    };
+    let cookie = session_cookie("melody_youtube_session", &session, 28_800);
+    let mut response = oauth_redirect(&frontend, "youtube", "connected", "success");
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    response
 }
 
 async fn spotify_authorize(State(state): State<AppState>) -> Result<Redirect, ApiError> {
@@ -676,35 +1371,61 @@ struct SpotifyCallback {
 async fn spotify_callback(
     State(app): State<AppState>,
     Query(query): Query<SpotifyCallback>,
-) -> Result<Response, ApiError> {
-    if let Some(error) = query.error {
-        return Err(ApiError::bad_request(format!(
-            "Spotify 授权未完成：{error}"
-        )));
+) -> Response {
+    let frontend = app.spotify.frontend_url();
+    if query.error.is_some() {
+        return oauth_redirect(&frontend, "spotify", "error", "authorization_cancelled");
     }
-    let (session, frontend) = app
-        .spotify
-        .complete_authorization(
-            query
-                .code
-                .as_deref()
-                .ok_or_else(|| ApiError::bad_request("回调缺少 code"))?,
-            query
-                .state
-                .as_deref()
-                .ok_or_else(|| ApiError::bad_request("回调缺少 state"))?,
-        )
-        .await
-        .map_err(ApiError::internal)?;
-    let cookie =
-        format!("melody_spotify_session={session}; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800");
-    let mut response =
-        Redirect::temporary(&format!("{frontend}/?spotify=connected")).into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&cookie).map_err(ApiError::internal)?,
-    );
-    Ok(response)
+    let Some(code) = query.code.as_deref() else {
+        return oauth_redirect(&frontend, "spotify", "error", "missing_code");
+    };
+    let Some(state) = query.state.as_deref() else {
+        return oauth_redirect(&frontend, "spotify", "error", "missing_state");
+    };
+    let (session, frontend) = match app.spotify.complete_authorization(code, state).await {
+        Ok(result) => result,
+        Err(_) => {
+            return oauth_redirect(&frontend, "spotify", "error", "authorization_failed");
+        }
+    };
+    let cookie = session_cookie("melody_spotify_session", &session, 28_800);
+    let mut response = oauth_redirect(&frontend, "spotify", "connected", "success");
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    response
+}
+
+fn oauth_redirect(frontend: &str, provider: &str, status: &str, reason: &str) -> Response {
+    let fallback = "http://127.0.0.1:5173/";
+    let mut url = reqwest::Url::parse(frontend)
+        .or_else(|_| reqwest::Url::parse(fallback))
+        .expect("static fallback URL is valid");
+    url.set_path("/");
+    url.set_query(None);
+    url.query_pairs_mut()
+        .append_pair("oauth", status)
+        .append_pair("provider", provider)
+        .append_pair("reason", reason);
+    Redirect::temporary(url.as_str()).into_response()
+}
+
+fn session_cookie(name: &str, value: &str, max_age: u32) -> String {
+    let secure = std::env::var("OAUTH_COOKIE_SECURE")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        || std::env::var("PUBLIC_BASE_URL")
+            .ok()
+            .is_some_and(|value| value.trim().to_ascii_lowercase().starts_with("https://"));
+    format!(
+        "{name}={value}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age}{}",
+        if secure { "; Secure" } else { "" }
+    )
 }
 
 fn writer_for(state: &AppState, platform: &str) -> Option<Box<dyn PlaylistWriter>> {
@@ -1071,7 +1792,10 @@ mod tests {
             platforms: platforms::PlatformService::new(),
             agent: agent::AgentService::in_memory().await.unwrap(),
             metadata: metadata::MetadataService::new(),
+            analyses: Arc::new(RwLock::new(HashMap::new())),
             imports: Arc::new(RwLock::new(HashMap::new())),
+            transfer_previews: Arc::new(RwLock::new(HashMap::new())),
+            transfer_runs: Arc::new(StdRwLock::new(HashMap::new())),
         })
     }
 
@@ -1088,6 +1812,32 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn oauth_callback_without_code_returns_to_frontend_with_safe_error() {
+        for path in ["/api/spotify/callback", "/api/youtube/callback"] {
+            let response = test_app()
+                .await
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(response.status().is_redirection());
+            let location = response
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert!(location.contains("oauth=error"));
+            assert!(location.contains("reason=missing_code"));
+            assert!(!location.contains("token"));
+        }
     }
 
     #[tokio::test]
@@ -1108,6 +1858,88 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = to_bytes(response.into_body(), 4096).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains("明确确认"));
+    }
+
+    #[tokio::test]
+    async fn transfer_run_is_sessionized_and_queryable() {
+        let router = test_app().await;
+        let track = crate::demo::demo_playlists()[0].tracks[0].clone();
+        let preview_request = serde_json::json!({
+            "playlist_name": "Session test",
+            "tracks": [track],
+            "destination_platform": "youtube",
+            "allow_alternate_versions": false,
+            "use_mock": true
+        });
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/transfers/preview")
+                    .header("content-type", "application/json")
+                    .body(Body::from(preview_request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let preview: models::TransferPreview = serde_json::from_slice(&body).unwrap();
+        let execute_request = serde_json::json!({
+            "preview_id": preview.preview_id,
+            "confirmed": true,
+            "selections": {},
+            "privacy": "private"
+        });
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/transfers/runs")
+                    .header("content-type", "application/json")
+                    .body(Body::from(execute_request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let created: models::TransferRun = serde_json::from_slice(&body).unwrap();
+
+        let mut completed = None;
+        for _ in 0..40 {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(format!("/api/transfers/runs/{}", created.id))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let current: models::TransferRun = serde_json::from_slice(&body).unwrap();
+            if current.status == "COMPLETED" {
+                completed = Some(current);
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        let completed = completed.expect("mock transfer run should complete");
+        assert_eq!(completed.processed_count, 1);
+        assert_eq!(completed.progress, 1.0);
+        assert!(
+            completed
+                .result
+                .as_ref()
+                .is_some_and(|result| result.is_mock)
+        );
+        assert!(completed.result.as_ref().is_some_and(|result| {
+            result.report_csv_url.is_some() && result.report_json_url.is_some()
+        }));
     }
 
     #[test]

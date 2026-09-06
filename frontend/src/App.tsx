@@ -1,18 +1,20 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import ExportModal from './ExportModal'
-import type { AgentSettings, AgentTask, BridgeTrack, ComparisonReport, DataState, DemoPayload, ImportPreview, ImportPreviewRequest, PersonalAnalysis, PlatformCapability, PlaylistLinkInspection, ProviderConfigurationStatus, Recommendation, SpotifyConnectionStatus, SpotifyImportResult, SpotifyPlaylistSummary, Track, WriterStatus, YouTubeConnectionStatus, YouTubeImportResult, YouTubePlaylistSummary } from './types'
+import type { AgentDecision, AgentPlan, AgentSettings, AgentTask, AlternateVersionSearchResult, BridgeTrack, ComparisonReport, DataState, DemoPayload, ImportPreview, ImportPreviewRequest, PersonalAnalysis, PlatformCapability, PlaylistLinkInspection, ProviderConfigurationStatus, Recommendation, SpotifyConnectionStatus, SpotifyImportResult, SpotifyPlaylistSummary, Track, TransferPreview, TransferResult, TransferRun, VersionType, WriterStatus, YouTubeConnectionStatus, YouTubeImportResult, YouTubePlaylistSummary } from './types'
 
-type Tab = 'home' | 'taste' | 'recommend' | 'compare' | 'agent' | 'history' | 'settings'
+type Tab = 'home' | 'taste' | 'recommend' | 'compare' | 'versions' | 'transfer' | 'agent' | 'history' | 'settings'
 type ExportTarget = { platform: string; tracks: Track[]; label: string }
 
 const navItems: { id: Tab; label: string }[] = [
   { id: 'home', label: '开始' }, { id: 'taste', label: '品味地图' }, { id: 'recommend', label: '探索推荐' },
-  { id: 'compare', label: '好友桥梁' }, { id: 'agent', label: 'Agent 运行' }, { id: 'history', label: '历史' }, { id: 'settings', label: '设置' },
+  { id: 'compare', label: '好友桥梁' }, { id: 'versions', label: '版本雷达' }, { id: 'transfer', label: '跨平台复制' }, { id: 'agent', label: 'Agent 运行' }, { id: 'history', label: '历史' }, { id: 'settings', label: '设置' },
 ]
 
+function tabForPath(path: string): Tab { if (path === '/discover') return 'recommend'; if (path === '/agent') return 'agent'; if (path === '/compare') return 'compare'; if (path === '/versions') return 'versions'; if (path === '/transfer') return 'transfer'; return 'home' }
+
 export default function App() {
-  const [tab, setTab] = useState<Tab>('home')
+  const [tab, setTab] = useState<Tab>(() => tabForPath(window.location.pathname))
   const [demo, setDemo] = useState<DemoPayload | null>(null)
   const [statuses, setStatuses] = useState<WriterStatus[]>([])
   const [capabilities, setCapabilities] = useState<PlatformCapability[]>([])
@@ -23,6 +25,8 @@ export default function App() {
   const [manualPersonal, setManualPersonal] = useState<PersonalAnalysis | null>(null)
   const [dataState, setDataState] = useState<DataState>('NONE')
   const [exportTarget, setExportTarget] = useState<ExportTarget | null>(null)
+  const [oauthNotice, setOauthNotice] = useState<{ ok: boolean; message: string } | null>(null)
+  const [comparisonBinding, setComparisonBinding] = useState<{ analysis_a_id: string; analysis_b_id: string } | null>(null)
 
   useEffect(() => {
     Promise.all([api.demo(), api.statuses(), api.capabilities(), api.spotifyMe(), api.youtubeMe()])
@@ -34,11 +38,35 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    const onPopState = () => setTab(tabForPath(window.location.pathname))
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
+  const navigate = (next: Tab) => {
+    setTab(next)
+    const path = next === 'recommend' ? '/discover' : next === 'agent' ? '/agent' : next === 'compare' ? '/compare' : next === 'versions' ? '/versions' : next === 'transfer' ? '/transfer' : '/'
+    if (window.location.pathname !== path) window.history.pushState({}, '', path)
+  }
+
+  useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    if (params.get('spotify') === 'connected' || params.get('youtube') === 'connected') {
+    const oauth = params.get('oauth')
+    const provider = params.get('provider') === 'youtube' ? 'YouTube' : 'Spotify'
+    if (oauth === 'connected') {
+      setOauthNotice({ ok: true, message: `${provider} 已通过官方 OAuth 连接。` })
       Promise.all([api.statuses(), api.spotifyMe(), api.youtubeMe()]).then(([writerStatuses, spotifyStatus, youtubeStatus]) => {
         setStatuses(writerStatuses); setSpotify(spotifyStatus); setYoutube(youtubeStatus)
       }).catch(() => undefined)
+      window.history.replaceState({}, '', '/')
+    } else if (oauth === 'error') {
+      const messages: Record<string, string> = {
+        authorization_cancelled: '授权已取消，没有保存连接。',
+        missing_code: '授权回调缺少授权码，请从“连接”按钮重新开始。',
+        missing_state: '授权回调缺少安全校验，请从“连接”按钮重新开始。',
+        authorization_failed: '授权未能完成，可能已过期或配置不一致，请重新连接。',
+      }
+      setOauthNotice({ ok: false, message: `${provider}：${messages[params.get('reason') ?? ''] ?? '授权未完成，请重新连接。'}` })
       window.history.replaceState({}, '', '/')
     }
   }, [])
@@ -60,17 +88,21 @@ export default function App() {
 
   return <div className="app-shell">
     <header className="topbar">
-      <button className="brand" onClick={() => setTab('home')}><Logo /><span><strong>MelodyPath</strong><small>可解释音乐探索 Agent</small></span></button>
-      <nav aria-label="主导航">{navItems.map((item) => <button className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)} key={item.id}>{item.label}</button>)}</nav>
+      <button className="brand" onClick={() => navigate('home')}><Logo /><span><strong>MelodyPath</strong><small>可解释音乐探索 Agent</small></span></button>
+      <nav aria-label="主导航">{navItems.map((item) => <button className={tab === item.id ? 'active' : ''} onClick={() => navigate(item.id)} key={item.id}>{item.label}</button>)}</nav>
       <div className="header-status"><span className="pulse" />Rust API 在线</div>
     </header>
 
     <main>
-      {tab === 'home' && <Home demo={demo} capabilities={capabilities} spotify={spotify} youtube={youtube} onRefreshConnections={refreshConnections} onDemo={() => { setManualPersonal(null); setDataState('DEMO'); setTab('taste') }} onManual={(personal, state) => { setManualPersonal(personal); setDataState(state); setTab('taste') }} onImportError={() => { setManualPersonal(null); setDataState('ERROR') }} onCompare={() => setTab('compare')} onExport={openExport} />}
-      {tab === 'taste' && activePersonal && <TastePage personal={activePersonal} canExplore={Boolean(activePersonal.recommendation_summary)} onExplore={() => setTab('recommend')} />}
+      {oauthNotice && <div className={oauthNotice.ok ? 'success-box oauth-notice' : 'error-box oauth-notice'}>{oauthNotice.message}<button className="text-button" onClick={() => setOauthNotice(null)}>关闭</button></div>}
+      {tab === 'home' && <Home demo={demo} capabilities={capabilities} spotify={spotify} youtube={youtube} onRefreshConnections={refreshConnections} onDemo={() => { setManualPersonal(null); setDataState('DEMO'); navigate('taste') }} onManual={(personal, state) => { setManualPersonal(personal); setDataState(state); navigate('taste') }} onImportError={() => { setManualPersonal(null); setDataState('ERROR') }} onCompare={() => navigate('compare')} onTransfer={() => navigate('transfer')} onAgent={() => navigate('agent')} onDiscover={() => activePersonal ? navigate('recommend') : document.getElementById('more-import')?.scrollIntoView({ behavior: 'smooth' })} onExport={openExport} />}
+      {tab === 'taste' && activePersonal && <TastePage personal={activePersonal} canExplore={Boolean(activePersonal.recommendation_summary)} onExplore={() => navigate('recommend')} />}
       {tab === 'recommend' && activePersonal && <RecommendationPage personal={activePersonal} onExport={openExport} />}
-      {tab === 'compare' && <ComparePage report={demo.comparison} onExport={openExport} />}
-      {tab === 'agent' && <AgentPage />}
+      {tab === 'recommend' && !activePersonal && <div className="page-width"><PageIntro eyebrow="DISCOVER" title="先导入并确认一份歌单" copy="当前页面尚未绑定分析。返回首页上传文件或粘贴歌曲，确认分析后即可查看推荐。" badge="NO ANALYSIS"/><button className="primary" onClick={() => navigate('home')}>返回首页导入歌单</button></div>}
+      {tab === 'compare' && <ComparePage demoReport={demo.comparison} capabilities={capabilities} onExport={openExport} onBinding={setComparisonBinding} />}
+      {tab === 'versions' && <VersionsPage currentAnalysis={activePersonal} youtube={youtube} onAddPreview={(track) => openExport('youtube', [track], `${track.title} · 版本雷达`)} />}
+      {tab === 'transfer' && <TransferPage spotify={spotify} youtube={youtube} capabilities={capabilities} currentAnalysis={activePersonal} />}
+      {tab === 'agent' && <AgentPage currentAnalysis={activePersonal} comparisonBinding={comparisonBinding} />}
       {tab === 'history' && <HistoryPage />}
       {tab === 'settings' && <SettingsPage />}
     </main>
@@ -84,7 +116,7 @@ function Logo() {
   return <svg className="logo" viewBox="0 0 42 42" aria-hidden="true"><path d="M8 29c5-12 9-3 13-14 3-8 8-5 13-10"/><circle cx="8" cy="29" r="3"/><circle cx="21" cy="15" r="3"/><circle cx="34" cy="5" r="3"/></svg>
 }
 
-function Home({ demo, capabilities, spotify, youtube, onRefreshConnections, onDemo, onManual, onImportError, onCompare, onExport }: {
+function Home({ demo, capabilities, spotify, youtube, onRefreshConnections, onDemo, onManual, onImportError, onCompare, onTransfer, onAgent, onDiscover, onExport }: {
   demo: DemoPayload
   capabilities: PlatformCapability[]
   spotify: SpotifyConnectionStatus | null
@@ -94,6 +126,9 @@ function Home({ demo, capabilities, spotify, youtube, onRefreshConnections, onDe
   onManual: (personal: PersonalAnalysis, state: 'REAL_FILE' | 'REAL_TEXT') => void
   onImportError: () => void
   onCompare: () => void
+  onTransfer: () => void
+  onAgent: () => void
+  onDiscover: () => void
   onExport: (platform: string, tracks: Track[], label: string) => void
 }) {
   const [text, setText] = useState('BIBI - Kazino\nDEAN - instagram\nMariya Takeuchi - Plastic Love')
@@ -156,11 +191,6 @@ function Home({ demo, capabilities, spotify, youtube, onRefreshConnections, onDe
     } catch (reason) { onImportError(); setError(reason instanceof Error ? reason.message : '文件读取失败') }
   }
 
-  const focusLink = () => {
-    document.getElementById('public-link-panel')?.scrollIntoView({ behavior: 'smooth' })
-    window.setTimeout(() => document.getElementById('playlist-link')?.focus(), 450)
-  }
-
   const disconnectSpotify = async () => {
     setError('')
     try { await api.disconnectSpotify(); await onRefreshConnections() }
@@ -174,6 +204,7 @@ function Home({ demo, capabilities, spotify, youtube, onRefreshConnections, onDe
   }
 
   return <>
+    <section className="task-launcher"><div><span className="eyebrow">MELODYPATH AGENT</span><h2>What would you like MelodyPath to do?</h2><p>每个入口都会显示真实计划、确认点和结果，不展示虚构的 Agent 思考过程。</p></div><div className="task-launcher-grid"><button onClick={() => document.getElementById('more-import')?.scrollIntoView({ behavior: 'smooth' })}><b>Analyze my playlist</b><span>导入 → 预览 → 分析</span></button><button onClick={onDiscover}><b>Discover new music</b><span>种子 → 候选 → 三区</span></button><button onClick={onCompare}><b>Compare with a friend</b><span>两份输入 → 共同空间</span></button><button onClick={onDiscover}><b>Find another version</b><span>推荐歌曲 → 主动版本探索</span></button><button onClick={onTransfer}><b>Copy a playlist</b><span>Spotify → YouTube · 原歌单不变</span></button><button onClick={onAgent}><b>View Agent workflow</b><span>计划 → 工具 → 检查点</span></button></div></section>
     <section className="hero">
       <div className="hero-copy"><span className="eyebrow">LOCAL-FIRST MUSIC ANALYSIS</span><h1>不登录账号，<br/><em>也能先分析歌单。</em></h1><p>直接粘贴“歌手 - 歌名”清单或上传文件。Rust 后端会在本机完成统计，联网时仅查询公开音乐目录补全 Genre、年代与能量；随后生成真正基于这份歌单的探索路线和推荐。</p><div className="hero-actions"><button className="primary big" onClick={() => document.getElementById('more-import')?.scrollIntoView({ behavior: 'smooth' })}>立即本地分析 <span>→</span></button><button className="secondary big" onClick={() => document.getElementById('connection-panel')?.scrollIntoView({ behavior: 'smooth' })}>连接音乐平台</button><button className="secondary big" onClick={onCompare}>与朋友比较</button></div><div className="trust-row"><span>✓ 无需账号密码</span><span>✓ Rust 本机分析</span><span>✓ 元数据失败也可降级运行</span></div></div>
       <div className="hero-map" aria-label="音乐探索路线示意"><div className="orbit orbit-one"/><div className="orbit orbit-two"/><GenreNode x="12%" y="62%" name="Korean R&B" tone="coral"/><GenreNode x="40%" y="35%" name="Alt. R&B" tone="gold"/><GenreNode x="70%" y="18%" name="Neo Soul" tone="mint"/><GenreNode x="73%" y="72%" name="Dream Pop" tone="blue"/><svg viewBox="0 0 500 400"><path d="M85 265 C155 245 150 170 224 163 S315 88 382 90"/><path className="dashed" d="M224 163 C285 188 318 286 390 280"/></svg><div className="map-caption"><strong>Genre 不是标签墙</strong><span>它是一张可以解释的路线图</span></div></div>
@@ -188,7 +219,7 @@ function Home({ demo, capabilities, spotify, youtube, onRefreshConnections, onDe
           const connected = isSpotify ? spotify?.connected : isYoutube ? youtube?.connected : false
           const displayName = isSpotify ? spotify?.display_name : isYoutube ? youtube?.channel_title ?? youtube?.display_name : undefined
           return <article className={`platform-card status-${connected ? 'connected' : capability.capability_status}`} key={capability.platform}><div className="platform-card-head"><span className={`platform-mark mark-${capability.platform}`}>{capability.display_name.slice(0, 1)}</span><div><h3>{capability.display_name}</h3><span className="capability-label">{connected ? `已连接 · ${displayName}` : capability.configured && capability.action_kind === 'connect' ? '已配置，可连接' : capability.status_label}</span></div></div><p>{capability.description}</p><div className="capability-facts"><span>读取：{humanCapability(capability.playlist_read)}</span><span>写入：{humanCapability(capability.playlist_write)}</span></div>{capability.policy_notice && <small>{capability.policy_notice}</small>}<div className="platform-actions">
-            {isSpotify && spotify?.connected ? <><button className="primary" onClick={() => setSpotifyPickerOpen(true)}>选择我的歌单</button><button className="text-button" onClick={() => void disconnectSpotify()}>解除连接</button></> : isYoutube && youtube?.connected ? <><button className="primary" onClick={() => setYoutubePickerOpen(true)}>选择我的播放列表</button><button className="text-button" onClick={() => void disconnectYoutube()}>解除连接</button></> : capability.action_kind === 'connect' && capability.configured ? <a className="primary" href={isYoutube ? '/api/youtube/authorize' : '/api/spotify/authorize'}>前往官方授权</a> : (isSpotify || isYoutube || capability.platform === 'apple_music') ? <button className="secondary" onClick={() => setConfigPlatform(isSpotify ? 'spotify' : isYoutube ? 'youtube' : 'apple')}>配置向导</button> : capability.action_kind === 'paste_link' ? <button className="secondary" onClick={focusLink}>粘贴公开链接</button> : <button className="secondary" disabled>{capability.status_label}</button>}
+            {isSpotify && spotify?.connected ? <><button className="primary" onClick={() => setSpotifyPickerOpen(true)}>选择我的歌单</button><button className="text-button" onClick={() => void disconnectSpotify()}>解除连接</button></> : isYoutube && youtube?.connected ? <><button className="primary" onClick={() => setYoutubePickerOpen(true)}>选择我的播放列表</button><button className="text-button" onClick={() => void disconnectYoutube()}>解除连接</button></> : capability.auth_supported && capability.configured ? <a className="primary" href={isYoutube ? '/api/youtube/authorize' : '/api/spotify/authorize'}>连接 {capability.display_name}</a> : capability.auth_supported ? <button className="secondary" onClick={() => setConfigPlatform(isSpotify ? 'spotify' : isYoutube ? 'youtube' : 'apple')}>配置向导</button> : capability.file_import_supported ? <button className="secondary" onClick={() => document.getElementById('more-import')?.scrollIntoView({ behavior: 'smooth' })}>导入文件或文本</button> : <button className="secondary" disabled>{capability.status_label}</button>}
             {capability.official_docs_url && <a className="docs-link" href={capability.official_docs_url} target="_blank" rel="noreferrer">官方说明 ↗</a>}
           </div></article>
         })}
@@ -296,48 +327,266 @@ function TasteZone({ label, values, tone }: { label: string; values: string[]; t
 function TrackLine({ track }: { track: Track }) { return <div className="track-line"><span className="album-placeholder">♪</span><span><strong>{track.title}</strong><small>{track.artists.join(', ')} · {track.album ?? '专辑未知'} · {track.release_year ?? '年份未知'}</small></span><em>{track.genres[0] ?? '元数据暂未匹配'}</em></div> }
 
 function RecommendationPage({ personal, onExport }: { personal: PersonalAnalysis; onExport: (platform: string, tracks: Track[], label: string) => void }) {
-  const tracks = personal.recommendations.map((item) => item.track)
   const zones = ['舒适区', '拓展区', '惊喜区']
   const routeLabel = personal.route.map((step) => step.genre).join(' → ') || '音乐探索路线'
   const summary = personal.recommendation_summary
   const stats = summary.query_stats
+  const pools: Record<string, Recommendation[]> = {
+    '舒适区': summary.comfort_pool?.length ? summary.comfort_pool : personal.recommendations.filter((item) => item.zone === '舒适区'),
+    '拓展区': summary.expansion_pool?.length ? summary.expansion_pool : personal.recommendations.filter((item) => item.zone === '拓展区'),
+    '惊喜区': summary.surprise_pool?.length ? summary.surprise_pool : personal.recommendations.filter((item) => item.zone === '惊喜区'),
+  }
+  const [offsets, setOffsets] = useState<Record<string, number>>({ '舒适区': 0, '拓展区': 0, '惊喜区': 0 })
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [exhausted, setExhausted] = useState<Record<string, boolean>>({})
+  useEffect(() => { setOffsets({ '舒适区': 0, '拓展区': 0, '惊喜区': 0 }); setExpanded({}); setExhausted({}) }, [personal.analysis_id])
+  const visible = (zone: string) => expanded[zone] ? pools[zone] : pools[zone].slice(offsets[zone] ?? 0, (offsets[zone] ?? 0) + 4)
+  const nextBatch = (zone: string) => {
+    const next = (offsets[zone] ?? 0) + 4
+    if (next >= pools[zone].length) { setExhausted({ ...exhausted, [zone]: true }); return }
+    setOffsets({ ...offsets, [zone]: next }); setExhausted({ ...exhausted, [zone]: next + 4 >= pools[zone].length })
+  }
+  const tracks = zones.flatMap((zone) => visible(zone)).map((item) => item.track)
   return <div className="page-width">
     <PageIntro eyebrow="EXPLAINABLE RECOMMENDATION" title="一条听得懂的探索路线" copy="真实模式以 Last.fm 听众相似关系、相似艺术家和关联标签生成候选，再由 Rust 本地评分；Genre 缺失不会淘汰强相似候选。" badge={`${tracks.length} TRACKS · ${personal.report.is_demo ? 'DEMO DATA' : 'REAL DATA · is_demo=false'}`} />
     <section className={`recommendation-status panel status-${summary.status}`}><div><span className="eyebrow">RECOMMENDATION SOURCE</span><h3>{summary.source_label}</h3><p>{summary.message}</p></div><div className="recommendation-coverage"><span><b>{personal.report.genre_matched_count}/{personal.report.track_count}</b>Genre 覆盖 · {Math.round(personal.report.genre_coverage * 100)}%</span><span><b>{personal.report.energy_matched_count}/{personal.report.track_count}</b>Energy 覆盖 · {Math.round(personal.report.energy_coverage * 100)}%</span><span><b>{summary.candidate_count}</b>真实候选</span><span><b>{personal.report.is_demo ? 'true' : 'false'}</b>is_demo</span></div><small>当前数据来源：{personal.report.source_label}</small></section>
-    {!personal.report.is_demo && <section className="panel recommendation-evidence"><div><span className="eyebrow">SELECTED SEEDS</span><h3>实际采用的种子歌曲 · {summary.seeds.length} 首</h3><div className="seed-list">{summary.seeds.map((seed) => <span key={`${seed.title}-${seed.artists.join('-')}`}><b>{seed.title}</b><small>{seed.artists.join(', ')}</small></span>)}</div></div><div><span className="eyebrow">LAST.FM QUERY REPORT</span><div className="query-stats"><span><b>{stats.successful_seed_count}</b>成功种子</span><span><b>{stats.failed_seed_count}</b>失败种子</span><span><b>{stats.raw_track_similar_count}</b>track.getSimilar</span><span><b>{stats.raw_artist_similar_count}</b>artist.getSimilar</span><span><b>{stats.raw_tag_top_tracks_count}</b>tag.getTopTracks</span><span><b>{stats.raw_candidate_count}</b>原始歌曲候选</span><span><b>{stats.deduplicated_candidate_count}</b>去重及排除后</span></div></div></section>}
+    {!personal.report.is_demo && <section className="panel recommendation-evidence"><div><span className="eyebrow">SELECTED SEEDS</span><h3>实际采用的种子歌曲 · {summary.seeds.length} 首</h3><div className="seed-list">{summary.seeds.map((seed) => <span key={`${seed.title}-${seed.artists.join('-')}`}><b>{seed.title}</b><small>{seed.artists.join(', ')}</small></span>)}</div></div><div><span className="eyebrow">LAST.FM QUERY REPORT</span><div className="query-stats"><span><b>{stats.successful_seed_count}</b>成功种子</span><span><b>{stats.failed_seed_count}</b>失败种子</span><span><b>{stats.raw_track_similar_count}</b>track.getSimilar</span><span><b>{stats.raw_artist_similar_count}</b>artist.getSimilar</span><span><b>{stats.raw_artist_top_tracks_count}</b>artist.getTopTracks</span><span><b>{stats.raw_tag_top_tracks_count}</b>tag.getTopTracks</span><span><b>{stats.raw_candidate_count}</b>Last.fm 原始候选</span><span><b>{stats.after_version_filter_count}</b>版本过滤后</span><span><b>{stats.after_deduplication_count}</b>规范化去重后</span><span><b>{stats.after_source_exclusion_count}</b>排除原歌单后</span><span><b>{stats.after_artist_cap_count}</b>艺术家上限后</span><span><b>{stats.comfort_candidate_count}/{stats.expansion_candidate_count}/{stats.surprise_candidate_count}</b>候选池：舒适 / 拓展 / 惊喜</span><span><b>{stats.tag_layer1_candidate_count} / {stats.tag_layer1_rejected_count}</b>Tag 第一层获取 / 淘汰</span><span><b>{stats.tag_layer2_candidate_count} / {stats.tag_layer2_rejected_count}</b>Tag 第二层获取 / 淘汰</span><span><b>{stats.genre_bridge_candidate_count}/{stats.second_hop_artist_candidate_count}</b>Genre 桥梁 / 第二跳艺人</span><span><b>{stats.tag_similar_success_count}/{stats.tag_similar_failure_count}</b>tag.getSimilar 成功 / 失败</span><span><b>{stats.request_budget_used_count}/48 · retry {stats.retry_count}</b>请求预算 / 重试</span><span><b>{stats.request_budget_exhausted_count}</b>请求预算耗尽</span></div><p className="candidate-seed">核心标签：{stats.core_tags?.join(' · ') || '未获得'}<br/>第一层：{stats.layer1_tags?.join(' · ') || '空'}<br/>第二层：{stats.layer2_tags?.join(' · ') || '空'}</p></div></section>}
     {tracks.length > 0 && <ExportToolbar tracks={tracks} label={routeLabel} onExport={onExport}/>} 
     {personal.route.length > 0 ? <section className="route-panel"><div className="route-line"/>{personal.route.map((step, index) => <div className="route-step" key={`${step.genre}-${index}`}><span className="step-number">0{index + 1}</span><div><strong>{step.genre}</strong><p>{step.explanation}</p><small>{step.tracks.map((track) => track.title).join(' · ')}</small></div>{index < personal.route.length - 1 && <b>→</b>}</div>)}</section> : <div className="zone-empty route-empty">暂无可验证的 Genre 路线；{summary.message}</div>}
-    {zones.map((zone) => { const items = personal.recommendations.filter((item) => item.zone === zone); const zoneSummary = summary.zones.find((item) => item.zone === zone); return <section className={`recommend-zone zone-${zone}`} key={zone}><div className="zone-heading"><span>{zone === '舒适区' ? '01' : zone === '拓展区' ? '02' : '03'}</span><div><h2>{zone} <small>{items.length} 首</small></h2><p>{zone === '舒适区' ? '延续现有偏好，低风险找到新歌' : zone === '拓展区' ? '保留熟悉锚点，引入新的音乐语言' : '差异更大，但每一步都有连接依据'}</p></div></div>{items.length > 0 ? <div className="recommend-grid">{items.map((item) => <RecommendationCard item={item} key={item.track.id}/>)}</div> : <div className="zone-empty"><strong>暂无足够的真实候选</strong><span>{zoneSummary?.message ?? summary.message}</span></div>}</section> })}
+    {zones.map((zone) => { const items = visible(zone); const pool = pools[zone]; const zoneSummary = summary.zones.find((item) => item.zone === zone); return <section className={`recommend-zone zone-${zone}`} key={zone}><div className="zone-heading"><span>{zone === '舒适区' ? '01' : zone === '拓展区' ? '02' : '03'}</span><div><h2>{zone} <small>当前 {items.length} / 候选池 {pool.length} 首</small></h2><p>{zone === '舒适区' ? '延续现有偏好，低风险找到新歌' : zone === '拓展区' ? '保留熟悉锚点，引入新的音乐语言' : '差异更大，但每一步都有连接依据'}</p></div></div>{items.length > 0 ? <><div className="recommend-grid">{items.map((item) => <RecommendationCard item={item} onAdd={(track) => onExport('youtube', [track], `${track.title} · MelodyPath 推荐`)} key={item.track.id}/>)}</div><div className="recommend-actions"><button className="secondary" disabled={expanded[zone] || exhausted[zone] || pool.length <= 4} onClick={() => nextBatch(zone)}>换一批</button><button className="text-button" disabled={pool.length <= 4} onClick={() => setExpanded({ ...expanded, [zone]: !expanded[zone] })}>{expanded[zone] ? '收起' : '查看更多'}</button>{(exhausted[zone] || pool.length <= 4) && <span className="candidate-seed">已看完本次候选</span>}</div></> : <div className="zone-empty"><strong>暂无足够的真实候选</strong><span>{zoneSummary?.message ?? summary.message}</span></div>}</section> })}
   </div>
 }
 
-function RecommendationCard({ item }: { item: Recommendation }) { return <article className="recommend-card"><div className="recommend-top"><span className="album-art">{item.track.title.slice(0, 1)}</span><div><h3>{item.track.title}</h3><p>{item.track.artists.join(', ')}</p></div>{item.track.platform_url && <a href={item.track.platform_url} target="_blank" rel="noreferrer" aria-label="Last.fm 曲目页面">↗</a>}</div><div className="tag-row">{item.tags.length > 0 ? item.tags.map((tag) => <span key={tag}>{tag}</span>) : <span>标签未返回</span>}</div><p className="candidate-source">{item.candidate_source} · {item.source_endpoint} · 置信度 {Math.round(item.match_confidence * 100)}% · 放宽级别 {item.relaxation_level}</p>{(item.seed_track || item.seed_artist) && <p className="candidate-seed">关联种子：{item.seed_track ? `《${item.seed_track}》` : item.seed_artist}{item.lastfm_similarity != null ? ` · Last.fm 相似度 ${Math.round(item.lastfm_similarity * 100)}%` : ''}</p>}<p className="reason">{item.reason}</p><div className="explain-pair"><div><small>连接依据</small><span>{item.connection}</span></div><div><small>拓展方向</small><span>{item.expansion}</span></div></div><div className="score-row"><Score label="匹配" value={item.match_score}/><Score label="新颖" value={item.novelty_score}/></div></article> }
+function RecommendationCard({ item, onAdd }: { item: Recommendation; onAdd: (track: Track) => void }) {
+  const [versionsOpen, setVersionsOpen] = useState(false)
+  return <article className="recommend-card"><div className="recommend-top"><span className="album-art">{item.track.title.slice(0, 1)}</span><div><h3>{item.track.title}</h3><p>{item.track.artists.join(', ')}</p></div>{item.track.platform_url && <a href={item.track.platform_url} target="_blank" rel="noreferrer" aria-label="Last.fm 曲目页面">↗</a>}</div><div className="tag-row">{item.tags.length > 0 ? item.tags.map((tag) => <span key={tag}>{tag}</span>) : <span>标签未返回</span>}</div><p className="candidate-source">{item.candidate_source} · {item.source_endpoint} · UI 置信度 {Math.round(item.match_confidence * 100)}% · 系统综合分 {Math.round(item.match_score * 100)}% · 放宽级别 {item.relaxation_level}</p>{(item.seed_track || item.seed_artist) && <p className="candidate-seed">关联种子：{item.seed_track ? `《${item.seed_track}》` : item.seed_artist}{item.lastfm_similarity != null ? ` · Last.fm 原始相似度 ${Math.round(item.lastfm_similarity * 100)}%` : ''}</p>}<p className="reason">{item.reason}</p><div className="explain-pair"><div><small>连接依据</small><span>{item.connection}</span></div><div><small>拓展方向</small><span>{item.expansion}</span></div></div><div className="score-row"><Score label="匹配" value={item.match_score}/><Score label="新颖" value={item.novelty_score}/></div><div className="recommend-actions"><button className="secondary" onClick={() => onAdd(item.track)}>Add to playlist</button><button className="text-button version-explore" onClick={() => setVersionsOpen((value) => !value)}>{versionsOpen ? '收起其他版本' : 'Explore other versions'}</button></div>{versionsOpen && <AlternateVersionsPanel track={item.track} onAdd={onAdd}/>}</article>
+}
+
+function AlternateVersionsPanel({ track, onAdd }: { track: Track; onAdd: (track: Track) => void }) {
+  const choices: { label: string; value: VersionType }[] = [{ label: 'Live', value: 'live' }, { label: 'Concert', value: 'concert' }, { label: 'Remix', value: 'remix' }, { label: 'Acoustic', value: 'acoustic' }, { label: 'Unplugged', value: 'unplugged' }, { label: 'Remaster', value: 'remastered' }]
+  const [selected, setSelected] = useState<VersionType[]>(['live', 'remix', 'acoustic'])
+  const [result, setResult] = useState<AlternateVersionSearchResult | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const toggle = (value: VersionType) => setSelected((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value])
+  const search = async (useMock = false) => { setBusy(true); setError(''); try { setResult(await api.searchAlternateVersions(track, selected, useMock)) } catch (reason) { setError(reason instanceof Error ? reason.message : '版本搜索失败') } finally { setBusy(false) } }
+  const asTrack = (candidate: AlternateVersionSearchResult['candidates'][number]): Track => ({ id: candidate.source_url, title: candidate.title, normalized_title: candidate.title.toLowerCase(), artists: candidate.artists, genres: [], duration_ms: candidate.duration_ms, platform: candidate.platform, platform_url: candidate.source_url, external_ids: {}, version_type: candidate.version_type, mood_tags: [], metadata_confidence: candidate.match_confidence })
+  return <div className="alternate-panel"><strong>{track.title} · 版本探索</strong><div className="version-options">{choices.map((choice) => <button className={selected.includes(choice.value) ? 'active' : ''} onClick={() => toggle(choice.value)} key={choice.value}>{choice.label}</button>)}</div><div className="alternate-actions"><button className="secondary" disabled={busy || selected.length === 0} onClick={() => void search(false)}>{busy ? '搜索中…' : '使用 YouTube 官方搜索'}</button><button className="text-button" disabled={busy} onClick={() => void search(true)}>用明确 Mock 验证流程</button></div>{error && <p className="error-box">{error}</p>}{result && <><p className={`alternate-status ${result.is_mock ? 'mock' : ''}`}><b>{result.provider} · {result.status}</b>{result.message}</p><div className="alternate-results">{result.candidates.map((candidate) => <div className="alternate-result-row" key={`${candidate.source_url}-${candidate.version_type}`}><a href={candidate.source_url} target="_blank" rel="noreferrer"><span>{candidate.version_type.replaceAll('_', ' ').toUpperCase()}</span><b>{candidate.title}</b><small>{candidate.artists.join(', ')} · {candidate.official_status} · {Math.round(candidate.match_confidence * 100)}%</small><em>{candidate.reason}</em></a><button className="secondary" onClick={() => onAdd(asTrack(candidate))}>Add to playlist</button></div>)}</div>{result.candidates.length === 0 && <div className="zone-empty">Original unavailable or no verified alternate on this provider.</div>}</>}</div>
+}
 function Score({ label, value }: { label: string; value: number }) { return <div><span>{label}</span><i><b style={{ width: `${value * 100}%` }}/></i><strong>{Math.round(value * 100)}</strong></div> }
 
-function ComparePage({ report, onExport }: { report: ComparisonReport; onExport: (platform: string, tracks: Track[], label: string) => void }) {
+function ComparePage({ demoReport, capabilities, onExport, onBinding }: { demoReport: ComparisonReport; capabilities: PlatformCapability[]; onExport: (platform: string, tracks: Track[], label: string) => void; onBinding: (binding: { analysis_a_id: string; analysis_b_id: string } | null) => void }) {
+  const [previewA, setPreviewA] = useState<ImportPreview | null>(null)
+  const [previewB, setPreviewB] = useState<ImportPreview | null>(null)
+  const [textA, setTextA] = useState('')
+  const [textB, setTextB] = useState('')
+  const [report, setReport] = useState<ComparisonReport | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [sourceA, setSourceA] = useState('file')
+  const [sourceB, setSourceB] = useState('pasted')
+  const prepare = async (side: 'a' | 'b', request: ImportPreviewRequest) => {
+    setBusy(true); setError(''); setReport(null)
+    try {
+      const preview = await api.previewImport(request)
+      if (side === 'a') setPreviewA(preview); else setPreviewB(preview)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '歌单解析失败') }
+    finally { setBusy(false) }
+  }
+  const loadFile = async (side: 'a' | 'b', file?: File) => {
+    if (!file) return
+    try {
+      const content = await file.text()
+      const format = file.name.split('.').pop()?.toLowerCase() ?? ''
+      await prepare(side, { name: file.name.replace(/\.[^.]+$/, ''), file_name: file.name, format, content, data_state: 'REAL_FILE' })
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '文件读取失败') }
+  }
+  const compare = async () => {
+    if (!previewA || !previewB) return
+    setBusy(true); setError('')
+    try {
+      const analysisA = await api.analyzeImport(previewA.id)
+      const analysisB = await api.analyzeImport(previewB.id)
+      setReport(await api.compareAnalyses(analysisA, analysisB))
+      onBinding({ analysis_a_id: analysisA.analysis_id, analysis_b_id: analysisB.analysis_id })
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '比较失败') }
+    finally { setBusy(false) }
+  }
+  const inputCard = (side: 'a' | 'b', preview: ImportPreview | null, text: string, setText: (value: string) => void) => {
+    const source = side === 'a' ? sourceA : sourceB
+    const setSource = side === 'a' ? setSourceA : setSourceB
+    const unavailable = source === 'spotify' || source === 'youtube'
+    return <section className="panel compare-input"><span className="eyebrow">FRIEND {side.toUpperCase()}</span><h3>{side === 'a' ? '第一份歌单' : '第二份歌单'}</h3><label className="field"><span>选择来源</span><select value={source} onChange={(event) => setSource(event.target.value)}><option value="file">Local file</option><option value="pasted">Pasted tracks</option><option value="netease">NetEase import</option><option value="qq_music">QQ Music import</option><option value="kugou">Kugou import</option><option value="spotify" disabled={!capabilities.find((item) => item.platform === 'spotify')?.compare_supported}>Spotify account</option><option value="youtube" disabled={!capabilities.find((item) => item.platform === 'youtube_music')?.compare_supported}>YouTube account</option></select></label>{unavailable ? <p className="privacy-note">该账号平台的数据政策不允许用于当前跨平台衍生比较；请上传自己导出的歌单文件。</p> : <><p>{['netease', 'qq_music', 'kugou'].includes(source) ? '该平台目前无法通过已验证的官方 API 直接读取，请上传导出的歌单或粘贴歌曲清单。' : '数据只用于本次临时比较。'}</p>{source !== 'pasted' && <label className="secondary upload-button">选择文件<input type="file" accept=".txt,.csv,.tsv,.json,.m3u,.m3u8" onChange={(event) => void loadFile(side, event.target.files?.[0])}/></label>}<textarea rows={4} value={text} placeholder="歌手 - 歌名" onChange={(event) => setText(event.target.value)}/><button className="secondary" disabled={!text.trim() || busy} onClick={() => void prepare(side, { name: `Friend ${side.toUpperCase()}`, format: 'txt', content: text, data_state: 'REAL_TEXT' })}>解析文本</button></>}{preview && <div className="compare-preview"><strong>{preview.source_label}</strong><span>{preview.parsed_count}/{preview.total_rows} 首解析成功 · {preview.warning_count} 个警告</span>{preview.preview_tracks.slice(0, 3).map((track) => <small key={`${track.title}-${track.artists.join()}`}>{track.title} — {track.artists.join(', ')}</small>)}</div>}</section>
+  }
+  if (!report) return <div className="page-width"><PageIntro eyebrow="TEMPORARY FRIEND COMPARE" title="两份真实歌单，一次私密比较" copy="先分别可靠解析两份输入，再用确定性指标计算共同歌曲、艺人、Genre、Tag 和多样性互补度。默认不保存好友歌单。" badge="/compare · LOCAL"/><div className="compare-input-grid">{inputCard('a', previewA, textA, setTextA)}{inputCard('b', previewB, textB, setTextB)}</div>{error && <p className="error-box">{error}</p>}<div className="compare-actions"><button className="secondary" onClick={() => { setReport(demoReport); onBinding(null) }}>查看明确标注的 Demo</button><button className="primary big" disabled={!previewA || !previewB || busy} onClick={() => void compare()}>{busy ? '正在分析两份歌单…' : '确认并开始临时比较'}</button></div><p className="privacy-note">不会建立公开社交账号；不会默认保存好友歌单。受官方 API 权限限制的链接应改为连接账号或上传导出文件，系统不会绕过平台权限。</p></div>
+  return <ComparisonResults report={report} onReset={() => { setReport(null); onBinding(null) }} onExport={onExport}/>
+}
+
+function ComparisonResults({ report, onReset, onExport }: { report: ComparisonReport; onReset: () => void; onExport: (platform: string, tracks: Track[], label: string) => void }) {
   const tracks = report.bridge_playlist.map((item) => item.track)
-  return <div className="page-width"><PageIntro eyebrow="CROSS-PLATFORM FRIEND MATCH" title="两种品味，一座声音桥梁" copy={report.summary} badge="A × B · DEMO"/><div className="people-card"><Person label={report.user_a} initials="A" values={report.user_a_signatures} tone="coral"/><div className="compatibility"><span>品味相似度</span><strong>46</strong><small>%</small><i>互补度 81%</i></div><Person label={report.user_b} initials="B" values={report.user_b_signatures} tone="blue"/></div><div className="metric-grid comparison-metrics">{report.metrics.map((metric) => <MetricCard key={metric.label} {...metric}/>)}</div><section className="panel bridge-section"><div className="panel-title"><div><span className="eyebrow">BRIDGE PLAYLIST</span><h3>A ↔ B 的桥梁歌单</h3></div><span>变化平滑 · 双方均衡</span></div><ExportToolbar tracks={tracks} label="A 与 B 的桥梁歌单" onExport={onExport}/><div className="bridge-list">{report.bridge_playlist.map((item, index) => <BridgeRow item={item} index={index} key={item.track.id}/>)}</div></section></div>
+  const compatibility = report.metrics.find((metric) => metric.label === 'Overall Compatibility')?.value ?? report.metrics[0]?.value ?? 0
+  return <div className="page-width"><PageIntro eyebrow="CROSS-PLAYLIST FRIEND MATCH" title="两种品味，一座声音桥梁" copy={report.summary} badge={`A × B · ${report.is_demo ? 'DEMO' : 'REAL · is_demo=false'}`}/><button className="secondary compare-reset" onClick={onReset}>重新比较</button><div className="people-card"><Person label={report.user_a} initials="A" values={report.user_a_signatures} tone="coral"/><div className="compatibility"><span>综合兼容度</span><strong>{Math.round(compatibility * 100)}</strong><small>%</small><i>{report.shared_track_count} 共同曲目 · {report.shared_artists.length} 共同艺人</i></div><Person label={report.user_b} initials="B" values={report.user_b_signatures} tone="blue"/></div><div className="comparison-facts"><span><b>{report.track_count_a}</b>A 曲目</span><span><b>{report.track_count_b}</b>B 曲目</span><span><b>{report.shared_genres.length}</b>共同 Genre</span><span><b>{report.saved_locally ? '是' : '否'}</b>保存好友数据</span><span><b>{report.data_source}</b>数据来源</span></div><div className="metric-grid comparison-metrics">{report.metrics.map((metric) => <MetricCard key={metric.label} {...metric}/>)}</div><section className="panel bridge-section"><div className="panel-title"><div><span className="eyebrow">MUTUAL DISCOVERY</span><h3>Safe for Both / Bridge / Adventure Together</h3></div><span>排除双方源歌单 · 确定性评分</span></div>{tracks.length > 0 && <ExportToolbar tracks={tracks} label="A 与 B 的共同推荐" onExport={onExport}/>}<div className="bridge-list">{report.bridge_playlist.map((item, index) => <BridgeRow item={item} index={index} onAdd={(track) => onExport('youtube', [track], `${track.title} · 共同推荐`)} key={item.track.id}/>)}</div>{tracks.length === 0 && <div className="zone-empty"><strong>暂无同时满足双方关联的真实候选</strong><span>没有使用 Demo 或固定曲目补齐；可在配置真实 Last.fm 后重新分析。</span></div>}</section></div>
 }
 function Person({ label, initials, values, tone }: { label: string; initials: string; values: string[]; tone: string }) { return <div className={`person ${tone}`}><span>{initials}</span><div><strong>{label}</strong><p>{values.join(' · ')}</p></div></div> }
-function BridgeRow({ item, index }: { item: BridgeTrack; index: number }) { return <div className="bridge-row"><span className="bridge-index">{String(index + 1).padStart(2, '0')}</span><span className="album-placeholder">♪</span><div className="bridge-track"><strong>{item.track.title}</strong><small>{item.track.artists.join(', ')} · {item.track.genres.join(' / ')}</small></div><span className="phase-chip">{item.phase}</span><p>{item.reason}</p><b>{Math.round(item.bridge_score * 100)}</b></div> }
+function BridgeRow({ item, index, onAdd }: { item: BridgeTrack; index: number; onAdd: (track: Track) => void }) { return <div className="bridge-row"><span className="bridge-index">{String(index + 1).padStart(2, '0')}</span><span className="album-placeholder">♪</span><div className="bridge-track"><strong>{item.track.title}</strong><small>{item.track.artists.join(', ')} · {item.track.genres.join(' / ') || 'Genre 未匹配'}</small><em>A：{item.reason_for_a} · B：{item.reason_for_b}</em><em>{item.candidate_source} · {item.shared_basis.join(' / ') || '跨画像关联'}</em></div><span className="phase-chip">{item.phase}</span><p>{item.reason}<button className="text-button" onClick={() => onAdd(item.track)}>Add to playlist</button></p><b>{Math.round(item.bridge_score * 100)}</b></div> }
 
 function ExportToolbar({ tracks, label, onExport }: { tracks: Track[]; label: string; onExport: (platform: string, tracks: Track[], label: string) => void }) { return <div className="export-toolbar"><div><span className="eyebrow">SAVE YOUR PATH</span><strong>选择歌曲，预览匹配，再创建新歌单</strong></div><div><button className="spotify-button" onClick={() => onExport('spotify', tracks, label)}>● 保存到 Spotify</button><button onClick={() => onExport('apple_music', tracks, label)}>♪ 保存到 Apple Music</button><button onClick={() => onExport('youtube', tracks, label)}>▶ 保存到 YouTube</button><button className="export-button" onClick={() => onExport('file', tracks, label)}>⇩ 导出歌曲清单</button><button className="demo-flow-button" onClick={() => onExport('demo', tracks, label)}>演示写入流程</button></div></div> }
 
-function AgentPage() {
+function VersionsPage({ currentAnalysis, youtube, onAddPreview }: { currentAnalysis: PersonalAnalysis | null; youtube: YouTubeConnectionStatus | null; onAddPreview: (track: Track) => void }) {
+  const [tracks, setTracks] = useState<Track[]>([])
+  const [source, setSource] = useState('尚未选择歌单')
+  const [playlists, setPlaylists] = useState<YouTubePlaylistSummary[]>([])
+  const [results, setResults] = useState<AlternateVersionSearchResult[]>([])
+  const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [error, setError] = useState('')
+  const cancelled = useRef(false)
+  const versionTypes: VersionType[] = ['live', 'concert', 'remix', 'acoustic', 'unplugged', 'remastered']
+  const useCurrent = () => { if (currentAnalysis) { setTracks(currentAnalysis.playlist.tracks); setSource(`当前分析 · ${currentAnalysis.playlist.name}`); setResults([]); setProgress(0) } }
+  const loadFile = async (file?: File) => {
+    if (!file) return
+    setBusy(true); setError('')
+    try { const content = await file.text(); const format = file.name.split('.').pop()?.toLowerCase() ?? ''; const preview = await api.previewImport({ name: file.name.replace(/\.[^.]+$/, ''), file_name: file.name, format, content, data_state: 'REAL_FILE' }); const analysis = await api.analyzeImport(preview.id); setTracks(analysis.playlist.tracks); setSource(`真实文件 · ${file.name}`); setResults([]); setProgress(0) }
+    catch (reason) { setError(reason instanceof Error ? reason.message : '文件解析失败') } finally { setBusy(false) }
+  }
+  const loadYoutube = async () => { setBusy(true); setError(''); try { setPlaylists(await api.youtubePlaylists()) } catch (reason) { setError(reason instanceof Error ? reason.message : '无法读取 YouTube 播放列表') } finally { setBusy(false) } }
+  const chooseYoutube = async (playlist: YouTubePlaylistSummary) => { setBusy(true); setError(''); try { const imported = await api.importYouTubePlaylists([playlist.id]); setTracks(imported.tracks); setSource(`YouTube 官方 OAuth · ${playlist.name}`); setResults([]); setProgress(0) } catch (reason) { setError(reason instanceof Error ? reason.message : 'YouTube 歌单读取失败') } finally { setBusy(false) } }
+  const scan = async () => {
+    const limited = tracks.slice(0, 40)
+    cancelled.current = false; setBusy(true); setError(''); setResults([]); setProgress(0)
+    try {
+      for (let index = 0; index < limited.length; index += 4) {
+        if (cancelled.current) break
+        const batch = limited.slice(index, index + 4)
+        const found = await Promise.all(batch.map((track) => api.searchAlternateVersions(track, versionTypes, false)))
+        if (cancelled.current) break
+        setResults((current) => [...current, ...found]); setProgress(Math.min(1, (index + batch.length) / limited.length))
+      }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '版本扫描失败') } finally { setBusy(false) }
+  }
+  const cancel = () => { cancelled.current = true; setBusy(false) }
+  const candidateTrack = (candidate: AlternateVersionSearchResult['candidates'][number]): Track => ({ id: candidate.source_url, title: candidate.title, normalized_title: candidate.title.toLowerCase(), artists: candidate.artists, genres: [], duration_ms: candidate.duration_ms, platform: candidate.platform, platform_url: candidate.source_url, external_ids: {}, version_type: candidate.version_type, mood_tags: [], metadata_confidence: candidate.match_confidence })
+  return <div className="page-width"><PageIntro eyebrow="VERSION RADAR" title="批量寻找同一首歌的其他正式版本" copy="复用现有 YouTube 官方搜索与确定性版本匹配；每批 4 首、最多 40 首，可中断。任何加入操作都会先进入预览，再由用户确认写入。" badge="/versions · PREVIEW FIRST"/><section className="panel transfer-source"><div className="panel-title"><div><span className="eyebrow">PLAYLIST SOURCE</span><h3>{source}</h3></div><span>{tracks.length} 首</span></div><div className="transfer-source-actions">{currentAnalysis && !currentAnalysis.report.is_demo && <button className="secondary" onClick={useCurrent}>当前已分析歌单</button>}<label className="secondary upload-button">本地文件<input type="file" accept=".txt,.csv,.tsv,.json,.m3u,.m3u8" onChange={(event) => void loadFile(event.target.files?.[0])}/></label>{youtube?.connected ? <button className="secondary" onClick={() => void loadYoutube()}>YouTube 账号歌单</button> : <button className="secondary" disabled>YouTube OAuth 未连接</button>}</div>{playlists.length > 0 && <div className="transfer-playlist-picker">{playlists.map((playlist) => <button onClick={() => void chooseYoutube(playlist)} key={playlist.id}><b>{playlist.name}</b><span>{playlist.item_count} 首</span></button>)}</div>}<p className="privacy-note">扫描上限 40 首；不会修改源歌单。Original / Live / Concert / Remix / Acoustic / Unplugged / Remaster 会按源歌曲分组。</p><div className="transfer-preview-actions"><button className="primary" disabled={busy || tracks.length === 0 || !youtube?.connected} onClick={() => void scan()}>{busy ? `扫描中 ${Math.round(progress * 100)}%` : '开始真实版本扫描'}</button>{busy && <button className="danger-button" onClick={cancel}>取消扫描</button>}</div>{error && <p className="error-box">{error}</p>}</section><section className="panel version-radar-results"><div className="panel-title"><div><span className="eyebrow">GROUPED RESULTS</span><h3>已扫描 {results.length} / {Math.min(tracks.length, 40)} 首</h3></div><span>{results.reduce((sum, result) => sum + result.candidates.length, 0)} 个版本</span></div>{results.map((result) => <article className="alternate-panel" key={result.source_track.id}><strong>{result.source_track.title} — {result.source_track.artists.join(', ')}</strong><small>{result.provider} · {result.status}</small><div className="alternate-results">{result.candidates.map((candidate) => <div className="alternate-result-row" key={`${candidate.source_url}-${candidate.version_type}`}><a href={candidate.source_url} target="_blank" rel="noreferrer"><span>{candidate.version_type.toUpperCase()}</span><b>{candidate.title}</b><small>{candidate.platform} · {candidate.official_status} · {Math.round(candidate.match_confidence * 100)}%</small><em>{candidate.reason}</em></a><button className="secondary" onClick={() => onAddPreview(candidateTrack(candidate))}>选择并进入 Add to playlist 预览</button></div>)}</div>{result.candidates.length === 0 && <div className="zone-empty">该源歌曲未找到满足确定性阈值的其他版本。</div>}</article>)}</section></div>
+}
+
+function TransferPage({ spotify, youtube, capabilities, currentAnalysis }: { spotify: SpotifyConnectionStatus | null; youtube: YouTubeConnectionStatus | null; capabilities: PlatformCapability[]; currentAnalysis: PersonalAnalysis | null }) {
+  const [sourceName, setSourceName] = useState('待复制歌单')
+  const [tracks, setTracks] = useState<Track[]>([])
+  const [sourceLabel, setSourceLabel] = useState('尚未选择来源')
+  const [spotifyPlaylists, setSpotifyPlaylists] = useState<SpotifyPlaylistSummary[]>([])
+  const [youtubePlaylists, setYoutubePlaylists] = useState<YouTubePlaylistSummary[]>([])
+  const [sourcePlatform, setSourcePlatform] = useState<'spotify' | 'youtube' | 'import'>('import')
+  const [destinationPlatform, setDestinationPlatform] = useState<'spotify' | 'youtube'>('youtube')
+  const [preview, setPreview] = useState<TransferPreview | null>(null)
+  const [result, setResult] = useState<TransferResult | null>(null)
+  const [transferRun, setTransferRun] = useState<TransferRun | null>(null)
+  const [allowAlternate, setAllowAlternate] = useState(false)
+  const [selections, setSelections] = useState<Record<string, string>>({})
+  const [confirmed, setConfirmed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const transferEvents = useRef<EventSource | null>(null)
+  useEffect(() => () => transferEvents.current?.close(), [])
+  const loadSpotifyPlaylists = async () => { setBusy(true); setError(''); try { setSpotifyPlaylists(await api.spotifyPlaylists()) } catch (reason) { setError(reason instanceof Error ? reason.message : '无法读取 Spotify 歌单') } finally { setBusy(false) } }
+  const chooseSpotify = async (playlist: SpotifyPlaylistSummary) => { setBusy(true); setError(''); try { const imported = await api.importSpotifyPlaylists([playlist.id]); setTracks(imported.tracks); setSourcePlatform('spotify'); setDestinationPlatform('youtube'); setSourceName(playlist.name); setSourceLabel(`Spotify 官方 API · ${imported.track_count} 首`); setPreview(null); setResult(null) } catch (reason) { setError(reason instanceof Error ? reason.message : '读取 Spotify 歌单失败') } finally { setBusy(false) } }
+  const loadYoutubePlaylists = async () => { setBusy(true); setError(''); try { setYoutubePlaylists(await api.youtubePlaylists()) } catch (reason) { setError(reason instanceof Error ? reason.message : '无法读取 YouTube 播放列表') } finally { setBusy(false) } }
+  const chooseYoutube = async (playlist: YouTubePlaylistSummary) => { setBusy(true); setError(''); try { const imported = await api.importYouTubePlaylists([playlist.id]); setTracks(imported.tracks); setSourcePlatform('youtube'); setDestinationPlatform('spotify'); setSourceName(playlist.name); setSourceLabel(`YouTube 官方 API · ${imported.track_count} 首`); setPreview(null); setResult(null) } catch (reason) { setError(reason instanceof Error ? reason.message : '读取 YouTube 播放列表失败') } finally { setBusy(false) } }
+  const loadFile = async (file?: File) => { if (!file) return; setBusy(true); setError(''); try { const content = await file.text(); const format = file.name.split('.').pop()?.toLowerCase() ?? ''; const parsed = await api.previewImport({ name: file.name.replace(/\.[^.]+$/, ''), file_name: file.name, format, content, data_state: 'REAL_FILE' }); const analysis = await api.analyzeImport(parsed.id); setTracks(analysis.playlist.tracks); setSourcePlatform('import'); setSourceName(analysis.playlist.name); setSourceLabel(`真实文件 · ${parsed.parsed_count}/${parsed.total_rows} 首解析成功`); setPreview(null); setResult(null) } catch (reason) { setError(reason instanceof Error ? reason.message : '文件读取失败') } finally { setBusy(false) } }
+  const useCurrent = () => { if (!currentAnalysis) return; setTracks(currentAnalysis.playlist.tracks); setSourcePlatform('import'); setSourceName(currentAnalysis.playlist.name); setSourceLabel(`当前分析 · ${currentAnalysis.playlist.tracks.length} 首`); setPreview(null); setResult(null) }
+  const prepare = async (useMock: boolean) => { setBusy(true); setError(''); setResult(null); setTransferRun(null); setSelections({}); setConfirmed(false); if (!useMock && sourcePlatform === destinationPlatform) { setError('来源与目标必须是不同平台'); setBusy(false); return } try { setPreview(await api.previewTransfer(sourceName, tracks, destinationPlatform, allowAlternate, useMock)) } catch (reason) { setError(reason instanceof Error ? reason.message : '生成复制预览失败') } finally { setBusy(false) } }
+  const watchTransferRun = (id: string) => new Promise<void>((resolve, reject) => {
+    transferEvents.current?.close()
+    const events = new EventSource(`/api/transfers/runs/${id}/events`)
+    transferEvents.current = events
+    events.addEventListener('transfer', (event) => {
+      const current = JSON.parse((event as MessageEvent).data) as TransferRun
+      setTransferRun(current)
+      if (current.result) setResult(current.result)
+      if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(current.status)) { events.close(); transferEvents.current = null; resolve() }
+    })
+    events.onerror = async () => {
+      events.close(); transferEvents.current = null
+      try {
+        const current = await api.transferRun(id)
+        setTransferRun(current)
+        if (current.result) setResult(current.result)
+        if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(current.status)) resolve()
+        else reject(new Error('复制进度连接中断，请重试状态查询'))
+      } catch (reason) { reject(reason) }
+    }
+  })
+  const execute = async () => { if (!preview || !confirmed) return; setBusy(true); setError(''); try { const created = await api.createTransferRun(preview.preview_id, selections); setTransferRun(created); await watchTransferRun(created.id) } catch (reason) { setError(reason instanceof Error ? reason.message : '复制执行失败') } finally { setBusy(false) } }
+  const cancelTransfer = async () => { if (!transferRun) return; try { setTransferRun(await api.cancelTransferRun(transferRun.id)) } catch (reason) { setError(reason instanceof Error ? reason.message : '取消复制失败') } }
+  const resumeTransfer = async () => { if (!transferRun) return; setBusy(true); setError(''); try { const resumed = await api.resumeTransferRun(transferRun.id); setTransferRun(resumed); await watchTransferRun(resumed.id) } catch (reason) { setError(reason instanceof Error ? reason.message : '恢复复制失败') } finally { setBusy(false) } }
+  const unresolved = preview?.matches.filter((item) => item.requires_confirmation && !selections[item.source_track.source_track_id]).length ?? 0
+  const destinationCapability = capabilities.find((item) => item.platform === (destinationPlatform === 'youtube' ? 'youtube_music' : 'spotify'))
+  if (capabilities.length > 0) return <div className="page-width">
+    <PageIntro eyebrow="COPY PLAYLIST AGENT" title="选择来源与目标，预览后再复制" copy="Spotify 与 YouTube 只通过官方 OAuth 连接；文件导入同样转换为统一曲目。歧义未确认前不会创建目标播放列表，原歌单不会被修改或删除。" badge="/transfer · PRIVATE BY DEFAULT"/>
+    <section className="transfer-connections"><ConnectionCard name="Spotify" status={spotify}/><ConnectionCard name="YouTube" status={youtube}/></section>
+    <section className="panel transfer-source">
+      <div className="panel-title"><div><span className="eyebrow">CHOOSE SOURCE</span><h3>选择一个只读来源</h3></div><span>{sourceLabel}</span></div>
+      <div className="transfer-source-actions">
+        {spotify?.connected ? <button className="spotify-button" onClick={() => void loadSpotifyPlaylists()}>Spotify 歌单</button> : spotify?.configured ? <a className="button-link spotify-button" href="/api/spotify/authorize">连接 Spotify</a> : <button className="secondary" disabled>Spotify 未配置</button>}
+        {youtube?.connected ? <button className="secondary" onClick={() => void loadYoutubePlaylists()}>YouTube 播放列表</button> : youtube?.configured ? <a className="button-link secondary" href="/api/youtube/authorize">连接 YouTube</a> : <button className="secondary" disabled>YouTube 未配置</button>}
+        <label className="secondary upload-button">本地文件<input type="file" accept=".txt,.csv,.tsv,.json,.m3u,.m3u8" onChange={(event) => void loadFile(event.target.files?.[0])}/></label>
+        {currentAnalysis && !currentAnalysis.report.is_demo && <button className="secondary" onClick={useCurrent}>已有 MelodyPath 分析</button>}
+      </div>
+      {spotifyPlaylists.length > 0 && <div className="transfer-playlist-picker">{spotifyPlaylists.map((playlist) => <button onClick={() => void chooseSpotify(playlist)} key={playlist.id}><b>{playlist.name}</b><span>{playlist.track_count} 首 · {playlist.owner_name}</span></button>)}</div>}
+      {youtubePlaylists.length > 0 && <div className="transfer-playlist-picker">{youtubePlaylists.map((playlist) => <button onClick={() => void chooseYoutube(playlist)} key={playlist.id}><b>{playlist.name}</b><span>{playlist.item_count} 首 · YouTube</span></button>)}</div>}
+      <div className="transfer-source-summary"><strong>{sourceName}</strong><span>{tracks.length} 首 · 源歌单永远不会被修改或删除</span></div>
+      <label className="field"><span>Destination（只显示已有官方 Writer 的平台）</span><select value={destinationPlatform} onChange={(event) => { setDestinationPlatform(event.target.value as 'spotify' | 'youtube'); setPreview(null); setResult(null) }}><option value="youtube" disabled={!capabilities.find((item) => item.platform === 'youtube_music')?.playlist_write_supported}>YouTube · 新建私有播放列表</option><option value="spotify" disabled={!capabilities.find((item) => item.platform === 'spotify')?.playlist_write_supported}>Spotify · 新建私有播放列表</option></select></label>
+      <p className="privacy-note">{destinationCapability?.reason}</p>
+      <label className="confirm-check"><input type="checkbox" checked={allowAlternate} onChange={(event) => setAllowAlternate(event.target.checked)}/><span><b>原版不可用时允许 Live / Remix / Acoustic</b><small>默认关闭；开启后会显示版本类型与匹配理由，并要求确认。</small></span></label>
+      <button className="primary big full" disabled={tracks.length === 0 || busy || !destinationCapability?.configured} onClick={() => void prepare(false)}>{busy ? '正在搜索候选…' : `匹配到 ${destinationPlatform === 'youtube' ? 'YouTube' : 'Spotify'} 并生成预览`}</button>
+      {!destinationCapability?.configured && <p className="error-box">目标平台属于 IMPLEMENTED BUT UNCONFIGURED；需要完成官方 OAuth 开发者配置，当前不会用 Mock 冒充连接。</p>}
+    </section>
+    {error && <p className="error-box">{error}</p>}
+    {preview && <section className="panel transfer-preview"><div className="panel-title"><div><span className="eyebrow">TRANSFER PREVIEW</span><h3>{preview.provider} · {preview.status}</h3></div><span>{preview.is_mock ? 'MOCK ONLY' : 'REAL PROVIDER'}</span></div><p>{preview.message}</p><div className="result-stats"><div><strong>{preview.source_count}</strong><span>源歌曲</span></div><div><strong>{preview.high_confidence_count}</strong><span>高置信</span></div><div><strong>{preview.ambiguous_count}</strong><span>歧义</span></div><div><strong>{preview.unmatched_count}</strong><span>未匹配</span></div></div><div className="transfer-match-list">{preview.matches.map((match) => <div className={`transfer-match ${match.status.toLowerCase()}`} key={match.source_track.source_track_id}><div><b>{match.source_track.title}</b><small>{match.source_track.artists.join(', ')} · {match.source_track.version_type}</small></div><span>{match.status} · {Math.round(match.score * 100)}%</span><p>{match.reason}</p>{match.requires_confirmation && <select value={selections[match.source_track.source_track_id] ?? ''} onChange={(event) => setSelections({ ...selections, [match.source_track.source_track_id]: event.target.value })}><option value="">选择候选或跳过</option>{match.candidates.map((candidate) => <option value={candidate.target_id} key={candidate.target_id}>{candidate.title} — {candidate.artists.join(', ')} · {candidate.version_type} · {Math.round(candidate.score * 100)}%</option>)}<option value="SKIP">跳过</option></select>}<details><summary>查看候选与确定性评分依据</summary>{match.candidates.map((candidate) => <div className="transfer-candidate" key={candidate.target_id}><b>{candidate.title}</b><span>{candidate.reason}</span></div>)}</details></div>)}</div>{preview.matches.length > 0 && <><label className="confirm-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}/><span><b>我已检查结果，确认创建新的私有播放列表</b><small>所有歧义必须改选或跳过；源歌单只读。</small></span></label><button className="primary big full" disabled={!confirmed || unresolved > 0 || busy} onClick={() => void execute()}>{unresolved > 0 ? `还有 ${unresolved} 首待确认` : '确认并执行迁移'}</button></>}</section>}
+    {transferRun && <section className="panel transfer-result"><div className="panel-title"><div><span className="eyebrow">COPY SESSION</span><h3>{transferRun.status}</h3></div><span>{transferRun.processed_count} / {transferRun.source_count}</span></div><p>实时进度 {Math.round(transferRun.progress * 100)}% · 会话 {transferRun.id.slice(0, 8)}</p>{['QUEUED', 'RUNNING', 'CANCELLING'].includes(transferRun.status) && <button className="danger-button" disabled={transferRun.status === 'CANCELLING'} onClick={() => void cancelTransfer()}>中断复制</button>}{['FAILED', 'CANCELLED'].includes(transferRun.status) && <button className="secondary" onClick={() => void resumeTransfer()}>从已完成歌曲继续</button>}{transferRun.error && <p className="error-box">{transferRun.error}</p>}</section>}
+    {result && <section className="panel transfer-result"><span className="eyebrow">EXECUTION RESULT</span><h3>{result.status} · {result.is_mock ? 'MOCK' : preview?.destination_platform.toUpperCase()}</h3><div className="result-stats"><div><strong>{result.written_count}</strong><span>成功</span></div><div><strong>{result.failed_count}</strong><span>失败</span></div><div><strong>{result.skipped_count}</strong><span>跳过</span></div><div><strong>{result.unmatched_count}</strong><span>未匹配</span></div></div>{result.playlist_url && <a href={result.playlist_url} target="_blank" rel="noreferrer">打开新播放列表</a>}<div className="report-links">{result.report_csv_url && <a href={result.report_csv_url}>下载 CSV 报告</a>}{result.report_json_url && <a href={result.report_json_url}>下载 JSON 报告</a>}</div></section>}
+  </div>
+  return <div className="page-width"><PageIntro eyebrow="PLAYLIST TRANSFER AGENT" title="Spotify → YouTube，先匹配再确认" copy="源歌单只读；确定性程序搜索和评分每首候选。未确认歧义或版本回退前不会创建目标歌单，目标默认且当前仅支持私有。" badge="/transfer · MVP"/><section className="transfer-connections"><ConnectionCard name="Spotify source" status={spotify}/><ConnectionCard name="YouTube destination" status={youtube}/></section><section className="panel transfer-source"><div className="panel-title"><div><span className="eyebrow">SOURCE PLAYLIST</span><h3>选择一个只读来源</h3></div><span>{sourceLabel}</span></div><div className="transfer-source-actions">{spotify?.connected ? <button className="spotify-button" onClick={() => void loadSpotifyPlaylists()}>读取我的 Spotify 歌单</button> : <a className="button-link spotify-button" href="/api/spotify/authorize">通过官方 OAuth 连接 Spotify</a>}<label className="secondary upload-button">上传导出的歌单<input type="file" accept=".txt,.csv,.tsv,.json,.m3u,.m3u8" onChange={(event) => void loadFile(event.target.files?.[0])}/></label>{currentAnalysis && !currentAnalysis.report.is_demo && <button className="secondary" onClick={useCurrent}>使用当前已分析歌单</button>}</div>{spotifyPlaylists.length > 0 && <div className="transfer-playlist-picker">{spotifyPlaylists.map((playlist) => <button onClick={() => void chooseSpotify(playlist)} key={playlist.id}><b>{playlist.name}</b><span>{playlist.track_count} 首 · {playlist.owner_name}{playlist.collaborative ? ' · 协作' : ''}</span></button>)}</div>}<div className="transfer-source-summary"><strong>{sourceName}</strong><span>{tracks.length} 首 · 源歌单不会被修改或删除</span></div><label className="confirm-check"><input type="checkbox" checked={allowAlternate} onChange={(event) => setAllowAlternate(event.target.checked)}/><span><b>原版不可用时允许其他版本</b><small>默认关闭。开启后 Live/Remix/Acoustic 等仍会标成歧义并要求逐首确认。</small></span></label><div className="transfer-preview-actions"><button className="primary" disabled={tracks.length === 0 || busy} onClick={() => void prepare(false)}>使用真实 YouTube Provider 生成预览</button><button className="demo-flow-button" disabled={tracks.length === 0 || busy} onClick={() => void prepare(true)}>使用明确 Mock Connector 验证流程</button></div></section>{error && <p className="error-box">{error}</p>}{preview && <section className="panel transfer-preview"><div className="panel-title"><div><span className="eyebrow">TRANSFER PREVIEW</span><h3>{preview.provider} · {preview.status}</h3></div><span>{preview.is_mock ? 'MOCK CONNECTOR' : 'REAL PROVIDER'}</span></div><p>{preview.message}</p><div className="result-stats"><div><strong>{preview.source_count}</strong><span>源歌曲</span></div><div><strong>{preview.high_confidence_count}</strong><span>高置信</span></div><div><strong>{preview.ambiguous_count}</strong><span>歧义</span></div><div><strong>{preview.unmatched_count}</strong><span>未匹配</span></div></div><div className="transfer-match-list">{preview.matches.map((match) => <div className={`transfer-match ${match.status.toLowerCase()}`} key={match.source_track.source_track_id}><div><b>{match.source_track.title}</b><small>{match.source_track.artists.join(', ')} · {match.source_track.version_type}</small></div><span>{match.status} · {Math.round(match.score * 100)}%</span><p>{match.reason}</p>{match.requires_confirmation && <select value={selections[match.source_track.source_track_id] ?? ''} onChange={(event) => setSelections({ ...selections, [match.source_track.source_track_id]: event.target.value })}><option value="">请选择候选或跳过</option>{match.candidates.map((candidate) => <option value={candidate.target_id} key={candidate.target_id}>{candidate.title} — {candidate.artists.join(', ')} · {candidate.version_type} · {Math.round(candidate.score * 100)}%</option>)}<option value="SKIP">跳过这首</option></select>}<details><summary>查看最多 5 个候选及评分依据</summary>{match.candidates.map((candidate) => <div className="transfer-candidate" key={candidate.target_id}><b>{candidate.title}</b><span>{candidate.reason}</span></div>)}</details></div>)}</div>{preview.matches.length > 0 && <><label className="confirm-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}/><span><b>我已检查匹配，确认创建新的私有 YouTube 播放列表</b><small>不会修改 Spotify 源歌单；歧义或版本回退必须先改选或跳过。</small></span></label><button className="primary big full" disabled={!confirmed || unresolved > 0 || busy} onClick={() => void execute()}>{unresolved > 0 ? `还有 ${unresolved} 首待确认` : '确认并执行迁移'}</button></>}</section>}{result && <section className="panel transfer-result"><span className="eyebrow">EXECUTION RESULT</span><h3>{result.status} · {result.is_mock ? 'MOCK CONNECTOR' : 'REAL YOUTUBE'}</h3><div className="result-stats"><div><strong>{result.written_count}</strong><span>写入成功</span></div><div><strong>{result.failed_count}</strong><span>写入失败</span></div><div><strong>{result.skipped_count}</strong><span>跳过</span></div><div><strong>{result.unmatched_count}</strong><span>未匹配</span></div></div><p>进度 {Math.round(result.progress * 100)}% · 源歌单修改：{result.source_was_modified ? '是（异常）' : '否'}</p>{result.playlist_url && (result.is_mock ? <code>{result.playlist_url}</code> : <a href={result.playlist_url} target="_blank" rel="noreferrer">打开新 YouTube 播放列表</a>)}<div className="report-links">{result.report_csv_url && <a href={result.report_csv_url}>下载 CSV 报告</a>}{result.report_json_url && <a href={result.report_json_url}>下载 JSON 报告</a>}</div></section>}</div>
+}
+
+function ConnectionCard({ name, status }: { name: string; status: SpotifyConnectionStatus | YouTubeConnectionStatus | null }) { return <div className={`connection-card ${status?.connected ? 'connected' : ''}`}><span>{status?.connected ? '已连接' : status?.configured ? '等待授权' : '未配置'}</span><strong>{name}</strong><small>{status?.message ?? '正在检查状态'}</small></div> }
+
+function AgentPage({ currentAnalysis, comparisonBinding }: { currentAnalysis: PersonalAnalysis | null; comparisonBinding: { analysis_a_id: string; analysis_b_id: string } | null }) {
   const [task, setTask] = useState<AgentTask | null>(null)
   const [scenario, setScenario] = useState<AgentTask['scenario']>('personal_exploration')
+  const [goal, setGoal] = useState('分析当前真实歌单，并根据候选结果逐步构建可解释探索路线')
+  const [useDemo, setUseDemo] = useState(false)
   const [error, setError] = useState('')
   useEffect(() => {
-    if (!task || ['completed', 'failed', 'cancelled'].includes(task.status)) return
+    if (!task || ['COMPLETED', 'FAILED', 'CANCELLED', 'BLOCKED_EXTERNAL_AUTH'].includes(task.status)) return
     const source = new EventSource(`/api/tasks/${task.id}/events`)
     source.addEventListener('task', (event) => setTask(JSON.parse((event as MessageEvent).data) as AgentTask))
     source.onerror = () => source.close()
     return () => source.close()
   }, [task?.id, task?.status])
-  const start = async () => { setError(''); try { setTask(await api.createTask(scenario)) } catch (reason) { setError(reason instanceof Error ? reason.message : '无法创建任务') } }
+  const start = async () => {
+    setError('')
+    try {
+      setTask(await api.createTask(scenario, goal, {
+        analysis_id: scenario === 'personal_exploration' && !useDemo ? currentAnalysis?.analysis_id : undefined,
+        analysis_a_id: scenario === 'friend_bridge' && !useDemo ? comparisonBinding?.analysis_a_id : undefined,
+        analysis_b_id: scenario === 'friend_bridge' && !useDemo ? comparisonBinding?.analysis_b_id : undefined,
+        use_demo: useDemo,
+      }))
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '无法创建任务') }
+  }
   const cancel = async () => { if (task) setTask(await api.cancelTask(task.id)) }
-  return <div className="page-width"><PageIntro eyebrow="RUST AGENT LOOP" title="看见 Agent 如何做决定" copy="这不是前端动画：每一步由 Rust 后端调度、写入 SQLite，并通过 SSE 实时推送。可随时中断，终态与资源用量会保留在历史中。" badge="LIVE SSE"/><div className="agent-layout"><section className="panel agent-control"><h3>选择音乐场景</h3><label className={scenario === 'personal_exploration' ? 'scenario active' : 'scenario'}><input type="radio" checked={scenario === 'personal_exploration'} onChange={() => setScenario('personal_exploration')}/><span>01</span><div><strong>个人 Genre 探索</strong><p>Korean R&B → Alternative R&B → Neo Soul</p></div></label><label className={scenario === 'friend_bridge' ? 'scenario active' : 'scenario'}><input type="radio" checked={scenario === 'friend_bridge'} onChange={() => setScenario('friend_bridge')}/><span>02</span><div><strong>跨平台好友桥梁</strong><p>计算重合、互补与平滑过渡歌单</p></div></label><button className="primary big full" disabled={task?.status === 'running'} onClick={start}>启动 Rust Agent</button>{error && <p className="error-box">{error}</p>}</section><section className="panel agent-terminal"><div className="terminal-head"><span><i/> agent.runtime</span>{task && <code>{task.id.slice(0, 8)}</code>}</div>{!task ? <div className="terminal-empty"><Logo/><p>选择场景并启动，执行轨迹将在这里实时出现。</p></div> : <><div className="progress-orbit"><div className="progress-number">{Math.round(task.progress * 100)}<small>%</small></div><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="52"/><circle className="progress-value" cx="60" cy="60" r="52" style={{ strokeDashoffset: 327 - 327 * task.progress }}/></svg></div><div className="agent-message"><span>STEP {String(task.current_step).padStart(2, '0')}</span><h3>{task.message}</h3><p>{task.goal}</p></div><div className="usage-grid"><span><small>状态</small><strong>{task.status}</strong></span><span><small>Input tokens</small><strong>{task.input_tokens}</strong></span><span><small>Output tokens</small><strong>{task.output_tokens}</strong></span><span><small>估算费用</small><strong>${task.estimated_cost_usd.toFixed(4)}</strong></span></div>{task.status === 'running' && <button className="danger-button" onClick={cancel}>中断任务</button>}{task.error && <p className="error-box">{task.error}</p>}{task.status === 'completed' && <p className="success-box">结果已持久化，可在“历史”中重新加载。Demo 未调用 LLM，因此 Token 和费用如实为 0。</p>}</>}</section></div></div>
+  const resume = async () => { if (task) { setError(''); try { setTask(await api.resumeTask(task.id)) } catch (reason) { setError(reason instanceof Error ? reason.message : '无法恢复任务') } } }
+  const plan = task ? parseAgentPlan(task.plan_json) : null
+  const decisions = task ? parseJsonArray<AgentDecision>(task.decisions_json) : []
+  const toolResults = task ? parseJsonArray<{ summary: string; success: boolean }>(task.tool_results_json) : []
+  const active = task && ['PLANNING', 'RUNNING'].includes(task.status)
+  const bindingReady = useDemo || (scenario === 'personal_exploration' ? Boolean(currentAnalysis && !currentAnalysis.report.is_demo) : Boolean(comparisonBinding))
+  return <div className="page-width"><PageIntro eyebrow="LLM-ASSISTED RUST AGENT LOOP" title="模型判断，Rust 工具执行，再根据结果判断" copy="LLM 只选择白名单工具和 continue / replan / finish；解析、推荐、去重、比较与权限仍由确定性 Rust 完成。页面不展示隐藏思维过程。" badge="LIVE SSE · CHECKPOINT"/><div className="agent-layout"><section className="panel agent-control"><h3>选择音乐场景</h3><label className={scenario === 'personal_exploration' ? 'scenario active' : 'scenario'}><input type="radio" checked={scenario === 'personal_exploration'} onChange={() => setScenario('personal_exploration')}/><span>01</span><div><strong>个人 Genre 探索</strong><p>绑定当前真实分析 → 候选 → 评分 → 路线</p></div></label><label className={scenario === 'friend_bridge' ? 'scenario active' : 'scenario'}><input type="radio" checked={scenario === 'friend_bridge'} onChange={() => setScenario('friend_bridge')}/><span>02</span><div><strong>两份歌单比较</strong><p>绑定 /compare 的真实 Analysis A + B</p></div></label><label className="field"><span>User Goal</span><textarea rows={3} value={goal} onChange={(event) => setGoal(event.target.value)}/></label><div className="key-status"><div><strong>{scenario === 'personal_exploration' ? currentAnalysis ? `${currentAnalysis.playlist.name} · ${currentAnalysis.report.track_count} 首` : '尚未分析真实歌单' : comparisonBinding ? '已绑定最近一次真实比较' : '尚未完成真实 /compare'}</strong><p>真实任务必须绑定 analysis id，工具结果与当前页面使用同一分析。</p></div></div><label className="confirm-check"><input type="checkbox" checked={useDemo} onChange={(event) => setUseDemo(event.target.checked)}/><span><b>明确使用 Demo</b><small>仅勾选后 Agent 才允许读取 demo payload。</small></span></label><button className="primary big full" disabled={Boolean(active) || !bindingReady} onClick={start}>启动 Agent 工具循环</button>{!bindingReady && <p className="privacy-note">请先完成对应的真实分析或真实比较。</p>}{error && <p className="error-box">{error}</p>}</section><section className="panel agent-terminal"><div className="terminal-head"><span><i/> agent.runtime</span>{task && <code>{task.id.slice(0, 8)}</code>}</div>{!task ? <div className="terminal-empty"><Logo/><p>绑定数据后启动，可核验的决策与工具轨迹将在这里出现。</p></div> : <><div className="progress-orbit"><div className="progress-number">{Math.round(task.progress * 100)}<small>%</small></div><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="52"/><circle className="progress-value" cx="60" cy="60" r="52" style={{ strokeDashoffset: 327 - 327 * task.progress }}/></svg></div><div className="agent-message"><span>STEP {String(task.current_step).padStart(2, '0')}</span><h3>{task.message}</h3><p><b>User Goal：</b>{task.goal}</p><p><b>Normalized Intent：</b>{task.normalized_intent_json}</p><p><b>Decision mode：</b>{task.decision_mode === 'LLM' ? 'LLM' : 'Deterministic fallback'} · <b>Data state：</b>{task.data_state}</p></div>{plan && <div className="agent-plan">{plan.steps.map((step) => <div className={`agent-plan-step ${step.status.toLowerCase()}`} key={step.step_id}><i>{step.status === 'COMPLETED' ? '✓' : step.status === 'RUNNING' ? '→' : step.status === 'FAILED' ? '!' : '○'}</i><span><b>{step.label}</b><small>{step.tool}{step.attempts > 0 ? ` · ${step.attempts} 次` : ''}</small></span></div>)}</div>}<div className="agent-trace"><span className="eyebrow">STRUCTURED DECISIONS</span>{decisions.slice(-8).map((decision, index) => <p key={`${decision.next_tool}-${index}`}><b>{decision.action.toUpperCase()}</b> · {decision.next_tool ?? 'finish'}<small>{decision.reason}</small></p>)}<span className="eyebrow">TOOL RESULT SUMMARY</span>{toolResults.slice(-8).map((result, index) => <p key={`${result.summary}-${index}`}><b>{result.success ? 'RESULT' : 'ERROR'}</b><small>{result.summary}</small></p>)}</div><div className="usage-grid"><span><small>状态</small><strong>{task.status}</strong></span><span><small>重试</small><strong>{task.retries}</strong></span><span><small>工具调用</small><strong>{safeArrayLength(task.tool_calls_json)}</strong></span><span><small>Token Usage</small><strong>{task.input_tokens + task.output_tokens}</strong></span><span><small>Estimated Cost</small><strong>${task.estimated_cost_usd.toFixed(4)}</strong></span></div>{active && <button className="danger-button" onClick={cancel}>中断任务</button>}{['FAILED', 'CANCELLED'].includes(task.status) && <button className="secondary" onClick={resume}>从检查点恢复</button>}{task.error && <p className="error-box">{task.error}</p>}{task.status === 'COMPLETED' && <p className="success-box">真实结果、结构化决策、工具调用和检查点均已持久化，可在“历史”中核验。</p>}</>}</section></div></div>
 }
+
+function parseAgentPlan(value: string): AgentPlan | null { try { return JSON.parse(value) as AgentPlan } catch { return null } }
+function safeArrayLength(value: string): number { try { const parsed = JSON.parse(value) as unknown; return Array.isArray(parsed) ? parsed.length : 0 } catch { return 0 } }
+function parseJsonArray<T>(value: string): T[] { try { const parsed = JSON.parse(value) as unknown; return Array.isArray(parsed) ? parsed as T[] : [] } catch { return [] } }
 
 function HistoryPage() {
   const [tasks, setTasks] = useState<AgentTask[]>([])
@@ -346,7 +595,7 @@ function HistoryPage() {
   const load = () => api.tasks().then(setTasks).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '读取失败'))
   useEffect(() => { load() }, [])
   const totals = useMemo(() => tasks.reduce((sum, task) => ({ tokens: sum.tokens + task.input_tokens + task.output_tokens, cost: sum.cost + task.estimated_cost_usd }), { tokens: 0, cost: 0 }), [tasks])
-  return <div className="page-width"><PageIntro eyebrow="PERSISTED HISTORY" title="任务不会随页面消失" copy="任务状态、目标、执行步数、结果、Token 与费用保存在 SQLite。服务重启时，未完成任务会被明确标记为中断。" badge="SQLITE"/><div className="history-summary"><span><strong>{tasks.length}</strong>历史任务</span><span><strong>{totals.tokens}</strong>累计 Tokens</span><span><strong>${totals.cost.toFixed(4)}</strong>估算费用</span><button className="secondary" onClick={load}>刷新</button></div>{error && <p className="error-box">{error}</p>}<section className="panel history-table"><div className="table-row table-head"><span>场景 / 目标</span><span>状态</span><span>步骤</span><span>Tokens</span><span>费用</span><span/></div>{tasks.map((task) => <button className="table-row" onClick={() => setSelected(task)} key={task.id}><span><strong>{task.scenario === 'personal_exploration' ? '个人 Genre 探索' : '好友桥梁歌单'}</strong><small>{task.goal}</small></span><span><i className={`task-status ${task.status}`}/>{task.status}</span><span>{task.current_step} / {task.max_steps}</span><span>{task.input_tokens + task.output_tokens}</span><span>${task.estimated_cost_usd.toFixed(4)}</span><span>查看 →</span></button>)}{tasks.length === 0 && <div className="empty-row">还没有历史任务。到“Agent 运行”启动一个场景。</div>}</section>{selected && <section className="panel history-detail"><button className="icon-button" onClick={() => setSelected(null)}>×</button><span className="eyebrow">SAVED RESULT</span><h3>{selected.goal}</h3><p>{selected.message}</p>{selected.error && <p className="error-box">{selected.error}</p>}<pre>{selected.result_json ? JSON.stringify(JSON.parse(selected.result_json), null, 2).slice(0, 4000) : '该任务没有结果数据。'}</pre></section>}</div>
+  return <div className="page-width"><PageIntro eyebrow="PERSISTED HISTORY" title="任务不会随页面消失" copy="目标、计划、工具调用、结果、重试与检查点保存在 SQLite。服务重启会明确中断运行中任务，并允许从已完成步骤继续。" badge="SQLITE"/><div className="history-summary"><span><strong>{tasks.length}</strong>历史任务</span><span><strong>{totals.tokens}</strong>累计 Tokens</span><span><strong>${totals.cost.toFixed(4)}</strong>估算费用</span><button className="secondary" onClick={load}>刷新</button></div>{error && <p className="error-box">{error}</p>}<section className="panel history-table"><div className="table-row table-head"><span>场景 / 目标</span><span>状态</span><span>步骤</span><span>工具调用</span><span>重试</span><span/></div>{tasks.map((task) => <button className="table-row" onClick={() => setSelected(task)} key={task.id}><span><strong>{task.scenario === 'personal_exploration' ? '个人 Genre 探索' : '好友歌单比较'}</strong><small>{task.goal}</small></span><span><i className={`task-status ${task.status.toLowerCase()}`}/>{task.status}</span><span>{task.current_step} / {task.max_steps}</span><span>{safeArrayLength(task.tool_calls_json)}</span><span>{task.retries}</span><span>查看 →</span></button>)}{tasks.length === 0 && <div className="empty-row">还没有历史任务。到“Agent 运行”启动一个场景。</div>}</section>{selected && <section className="panel history-detail"><button className="icon-button" onClick={() => setSelected(null)}>×</button><span className="eyebrow">SAVED AGENT RUN</span><h3>{selected.goal}</h3><p>{selected.message}</p>{selected.error && <p className="error-box">{selected.error}</p>}<pre>{selected.result_json ? JSON.stringify(JSON.parse(selected.result_json), null, 2).slice(0, 6000) : selected.plan_json}</pre></section>}</div>
 }
 
 function SettingsPage() {

@@ -57,6 +57,10 @@ pub fn canonicalize_genre(raw: &str) -> String {
         "singer songwriter" => "Singer/Songwriter",
         "folk" => "Folk",
         "city pop" => "City Pop",
+        "ballad" => "Ballad",
+        "korean ballad" | "k ballad" => "Korean Ballad",
+        "j pop ballad" | "japanese ballad" => "J-Pop Ballad",
+        "mandopop ballad" | "chinese ballad" => "Mandopop Ballad",
         "christmas" => "Christmas",
         "emo" => "Emo",
         "other" | "其他" => "其他",
@@ -101,6 +105,9 @@ pub fn genre_distance(left: &str, right: &str) -> u8 {
     {
         return 1;
     }
+    if parent_key(&left_key).is_some() && parent_key(&left_key) == parent_key(&right_key) {
+        return 2;
+    }
     if explicit_neighbors(&left)
         .iter()
         .any(|genre| genre_key(genre) == right_key)
@@ -139,22 +146,8 @@ pub fn exploration_genres(core: &[String], adjacent: &[String]) -> Vec<String> {
     for genre in adjacent.iter().chain(core.iter()) {
         for candidate in explicit_neighbors(&canonicalize_genre(genre)) {
             let key = genre_key(candidate);
-            if !blocked.contains(&key)
-                && core.iter().all(|core| genre_distance(core, candidate) >= 3)
-                && seen.insert(key)
-            {
+            if !blocked.contains(&key) && seen.insert(key) {
                 result.push((*candidate).to_string());
-            }
-        }
-    }
-    if result.is_empty() {
-        for fallback in ["Jazz", "Classical", "Electronic", "R&B", "Alternative Rock"] {
-            let key = genre_key(fallback);
-            if !blocked.contains(&key)
-                && core.iter().all(|core| genre_distance(core, fallback) >= 3)
-                && seen.insert(key)
-            {
-                result.push(fallback.to_string());
             }
         }
     }
@@ -173,6 +166,7 @@ fn parent_key(key: &str) -> Option<String> {
         "jazz pop" | "modal jazz" | "jazz funk" | "bossa nova" => "jazz",
         "modern classical" | "impressionism" | "soundtrack" => "classical",
         "progressive house" | "ambient" | "synthpop" => "electronic",
+        "korean ballad" | "j pop ballad" | "mandopop ballad" => "ballad",
         "indie pop" | "dream pop" | "shoegaze" | "chinese indie" => "alternative indie",
         _ => return None,
     };
@@ -206,6 +200,10 @@ fn explicit_neighbors(genre: &str) -> &'static [&'static str] {
         "jazz" | "jazz pop" | "modal jazz" => &["Bossa Nova", "Neo Soul", "Classical"],
         "classical" | "modern classical" | "impressionism" => &["Soundtrack", "Ambient", "Jazz"],
         "singer songwriter" | "folk" => &["Folk Rock", "Indie Pop", "Pop"],
+        "ballad" => &["Singer/Songwriter", "R&B", "Neo Soul"],
+        "korean ballad" => &["Korean R&B", "Ballad"],
+        "j pop ballad" => &["Japanese R&B", "Singer/Songwriter", "City Pop"],
+        "mandopop ballad" => &["Mandopop", "R&B", "Singer/Songwriter"],
         _ => &[],
     }
 }
@@ -252,5 +250,23 @@ mod tests {
                 .iter()
                 .any(|genre| genre == "Alternative R&B")
         );
+    }
+
+    #[test]
+    fn ballad_family_has_explainable_two_hop_bridge() {
+        assert_eq!(canonicalize_genre("k-ballad"), "Korean Ballad");
+        let adjacent = adjacent_genres(&["Korean Ballad".into()]);
+        assert!(adjacent.contains(&"Korean R&B".into()));
+        let exploration = exploration_genres(&["Korean Ballad".into()], &adjacent);
+        assert!(
+            exploration
+                .iter()
+                .any(|genre| genre == "Alternative R&B" || genre == "Neo Soul")
+        );
+    }
+
+    #[test]
+    fn exploration_never_invents_global_random_fallbacks() {
+        assert!(exploration_genres(&["Unmapped Scene".into()], &[]).is_empty());
     }
 }

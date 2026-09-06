@@ -19,11 +19,12 @@
 
 ## C. Apple Music MusicKit
 
-1. 加入 Apple Developer Program，在 Certificates, Identifiers & Profiles 创建 MusicKit identifier 与 Media Services key。
-2. 安全保存 `.p8`，设置 `APPLE_TEAM_ID`、`APPLE_KEY_ID`、`APPLE_PRIVATE_KEY_PATH`。
-3. 生成 ES256 developer token，或安全设置 `APPLE_MUSIC_DEVELOPER_TOKEN`；token 不得提交 Git。
-4. MusicKit Web 在 Apple 官方界面取得 Music User Token。当前项目尚未完成真实账号读写验收，因此 UI 会如实标注。
+官方 MusicKit 确实支持 Music User Token、资料库读取和创建播放列表，但当前项目没有实现或验收 Apple Music Web 账号连接器。因此 UI 固定显示 `IMPORT_ONLY`，不得仅凭环境变量或 bootstrap 预留代码显示 Connect。未来若单独立项，需要 Apple Developer Program、MusicKit identifier、Media Services key、允许域名与真实用户授权；`.p8`、Developer Token 和 Music User Token 都不得提交或回显。
 
 ## D. 必须由用户亲自完成的验收
 
-Spotify、Google/YouTube 和 Apple 的官方登录、同意授权、真实歌单读取及真实写回均必须由账号持有人亲自操作。没有凭据时 Demo、手工输入、文件导出、分析、推荐、好友比较、Agent 与历史仍可运行。
+Spotify 与 Google/YouTube 的官方登录、同意授权、真实歌单读取及真实写回必须由账号持有人亲自操作。Apple 当前不进入登录验收。没有 OAuth 配置时，真实文件/文本分析、Last.fm 推荐、好友比较、Agent fallback 与历史仍可运行。
+
+## E. 生产环境
+
+生产部署设置稳定 HTTPS `PUBLIC_BASE_URL`。若未显式提供平台回调，后端会派生 `<PUBLIC_BASE_URL>/api/spotify/callback` 与 `<PUBLIC_BASE_URL>/api/youtube/callback`；控制台登记值必须完全一致。开启 `OAUTH_COOKIE_SECURE=true`，由同域反向代理把 `/api` 转发到 Rust，并为 `OAuthTokenStore` 提供托管密钥/KMS 实现。开发机的 Windows DPAPI 文件不能复制到服务器充当生产凭据库。

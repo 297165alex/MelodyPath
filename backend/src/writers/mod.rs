@@ -242,6 +242,14 @@ fn exact_match(track: &Track, platform: &str, reason: &str) -> PlatformTrackMatc
             title: track.title.clone(),
             artists: track.artists.clone(),
             album: track.album.clone(),
+            duration_ms: track.duration_ms,
+            channel_name: None,
+            official_status: if platform == "demo" {
+                "mock_connector"
+            } else {
+                "source_metadata"
+            }
+            .into(),
             target_url: track.platform_url.clone(),
             version_type: VersionType::Original,
             confidence: 1.0,

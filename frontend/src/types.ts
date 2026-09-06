@@ -1,5 +1,5 @@
-export type VersionType = 'original' | 'live' | 'remix' | 'remastered' | 'acoustic' | 'cover' | 'instrumental' | 'unknown'
-export type DataState = 'NONE' | 'REAL_FILE' | 'REAL_TEXT' | 'DEMO' | 'ERROR'
+export type VersionType = 'original' | 'live' | 'concert' | 'remix' | 'remastered' | 'acoustic' | 'unplugged' | 'bonus_track' | 'sped_up' | 'slowed' | 'radio_edit' | 'cover' | 'instrumental' | 'karaoke' | 'reaction' | 'nightcore' | 'other' | 'unknown'
+export type DataState = 'NONE' | 'REAL_FILE' | 'REAL_TEXT' | 'REAL_ACCOUNT' | 'REAL_PUBLIC_LINK' | 'DEMO' | 'ERROR'
 export type MetadataStatus = 'complete' | 'partial' | 'missing'
 
 export interface ImportedTrack {
@@ -104,24 +104,73 @@ export interface TasteReport {
 }
 
 export interface Playlist { id: string; name: string; owner_label: string; source: string; is_demo: boolean; tracks: Track[] }
-export interface Recommendation { track: Track; zone: string; reason: string; connection: string; expansion: string; match_score: number; novelty_score: number; candidate_source: string; match_confidence: number; source_endpoint: string; seed_track?: string; seed_artist?: string; lastfm_similarity?: number; tags: string[]; relaxation_level: number }
+export interface Recommendation { track: Track; zone: string; reason: string; connection: string; expansion: string; match_score: number; novelty_score: number; candidate_source: string; match_confidence: number; source_endpoint: string; seed_track?: string; seed_artist?: string; lastfm_similarity?: number; tags: string[]; relaxation_level: number; already_in_source_playlist: boolean }
 export interface RecommendationZoneSummary { zone: string; count: number; message: string }
 export interface RecommendationSeed { title: string; artists: string[] }
-export interface RecommendationQueryStats { successful_seed_count: number; failed_seed_count: number; raw_track_similar_count: number; raw_artist_similar_count: number; raw_tag_top_tracks_count: number; raw_candidate_count: number; deduplicated_candidate_count: number }
-export interface RecommendationSummary { source_label: string; status: string; message: string; candidate_count: number; zones: RecommendationZoneSummary[]; seeds: RecommendationSeed[]; query_stats: RecommendationQueryStats }
+export interface RecommendationQueryStats {
+  successful_seed_count: number
+  failed_seed_count: number
+  raw_track_similar_count: number
+  raw_artist_similar_count: number
+  raw_artist_top_tracks_count: number
+  raw_tag_top_tracks_count: number
+  raw_candidate_count: number
+  after_version_filter_count: number
+  after_normalization_count: number
+  after_deduplication_count: number
+  after_source_exclusion_count: number
+  after_artist_cap_count: number
+  comfort_candidate_count: number
+  expansion_candidate_count: number
+  surprise_candidate_count: number
+  tag_layer1_candidate_count: number
+  tag_layer1_rejected_count: number
+  tag_layer2_candidate_count: number
+  tag_layer2_rejected_count: number
+  core_tags: string[]
+  tag_similar_success_count: number
+  tag_similar_failure_count: number
+  similar_tag_count: number
+  layer1_tags: string[]
+  layer2_tags: string[]
+  tag_top_track_counts: { tag: string; layer: number; candidate_count: number; source: string }[]
+  request_budget_exhausted_count: number
+  request_budget_used_count: number
+  retry_count: number
+  genre_bridge_candidate_count: number
+  second_hop_artist_candidate_count: number
+  deduplicated_candidate_count: number
+}
+export interface RecommendationSummary { source_label: string; status: string; message: string; candidate_count: number; zones: RecommendationZoneSummary[]; seeds: RecommendationSeed[]; query_stats: RecommendationQueryStats; comfort_pool: Recommendation[]; expansion_pool: Recommendation[]; surprise_pool: Recommendation[] }
+export interface AlternateVersionCandidate { title: string; artists: string[]; platform: string; version_type: VersionType; duration_ms?: number; official_status: string; match_confidence: number; source_url: string; reason: string; is_alternate_version: boolean }
+export interface AlternateVersionSearchResult { source_track: Track; provider: string; status: string; message: string; candidates: AlternateVersionCandidate[]; is_mock: boolean }
+export interface TransferTrack { title: string; artists: string[]; album?: string; duration_ms?: number; isrc?: string; source_platform: string; source_track_id: string; source_url?: string; normalized_title: string; normalized_artists: string[]; version_type: VersionType }
+export interface TransferCandidate { target_id: string; title: string; artists: string[]; duration_ms?: number; source_url?: string; channel_name?: string; official_status: string; version_type: VersionType; title_score: number; artist_score: number; duration_score?: number; version_score: number; score: number; reason: string }
+export interface TransferMatch { source_track: TransferTrack; candidates: TransferCandidate[]; selected_target_id?: string; status: 'MATCHED_HIGH' | 'MATCHED_AMBIGUOUS' | 'UNMATCHED' | 'SKIPPED'; score: number; reason: string; requires_confirmation: boolean; alternate_version_fallback: boolean }
+export interface TransferPreview { preview_id: string; playlist_name: string; source_count: number; high_confidence_count: number; ambiguous_count: number; unmatched_count: number; alternate_fallback_count: number; matches: TransferMatch[]; provider: string; destination_platform: 'spotify' | 'youtube'; status: string; message: string; requires_explicit_confirmation: boolean; source_was_modified: boolean; is_mock: boolean }
+export interface TransferTrackResult { source_track: TransferTrack; target_id?: string; status: string; error?: string }
+export interface TransferResult { run_id: string; preview_id: string; status: string; source_count: number; matched_count: number; written_count: number; failed_count: number; skipped_count: number; unmatched_count: number; progress: number; playlist_id?: string; playlist_url?: string; report_csv_url?: string; report_json_url?: string; results: TransferTrackResult[]; source_was_modified: boolean; is_mock: boolean }
+export interface TransferRun { id: string; preview_id: string; destination_platform: 'spotify' | 'youtube'; status: 'QUEUED' | 'RUNNING' | 'CANCELLING' | 'CANCELLED' | 'FAILED' | 'COMPLETED'; processed_count: number; source_count: number; progress: number; result?: TransferResult; error?: string; is_mock: boolean; revision: number; created_at: number; updated_at: number }
 export interface RouteStep { genre: string; explanation: string; tracks: Track[] }
-export interface BridgeTrack { track: Track; reason: string; phase: string; bridge_score: number }
+export interface BridgeTrack { track: Track; reason: string; reason_for_a: string; reason_for_b: string; shared_basis: string[]; candidate_source: string; phase: string; bridge_score: number; already_in_a: boolean; already_in_b: boolean }
 export interface ComparisonReport {
   user_a: string
   user_b: string
   metrics: TasteMetric[]
+  track_count_a: number
+  track_count_b: number
+  shared_track_count: number
+  shared_artists: string[]
   shared_genres: string[]
   user_a_signatures: string[]
   user_b_signatures: string[]
   summary: string
   bridge_playlist: BridgeTrack[]
+  is_demo: boolean
+  data_source: string
+  saved_locally: boolean
 }
-export interface PersonalAnalysis { playlist: Playlist; report: TasteReport; recommendations: Recommendation[]; route: RouteStep[]; recommendation_summary: RecommendationSummary; import_summary?: ImportAnalysisSummary; unmatched_tracks: ImportedTrack[] }
+export interface PersonalAnalysis { analysis_id: string; playlist: Playlist; report: TasteReport; recommendations: Recommendation[]; route: RouteStep[]; recommendation_summary: RecommendationSummary; import_summary?: ImportAnalysisSummary; unmatched_tracks: ImportedTrack[] }
 export interface DemoPayload {
   generated_at: string
   disclosure: string
@@ -148,6 +197,22 @@ export interface DataUseCapabilities {
 }
 export interface PlatformCapability {
   platform: string
+  auth_supported: boolean
+  playlist_read_supported: boolean
+  playlist_write_supported: boolean
+  public_link_import_supported: boolean
+  file_import_supported: boolean
+  compare_supported: boolean
+  transfer_source_supported: boolean
+  transfer_destination_supported: boolean
+  copy_source_supported: boolean
+  copy_destination_supported: boolean
+  playlist_read_for_copy: boolean
+  playlist_read_for_compare: boolean
+  playlist_read_for_recommendation: boolean
+  alternate_version_search_supported: boolean
+  status: string
+  reason: string
   display_name: string
   region: string
   capability_status: string
@@ -232,6 +297,9 @@ export interface MatchCandidate {
   title: string
   artists: string[]
   album?: string
+  duration_ms?: number
+  channel_name?: string
+  official_status: string
   target_url?: string
   version_type: VersionType
   confidence: number
@@ -281,11 +349,28 @@ export interface AgentTask {
   id: string
   scenario: 'personal_exploration' | 'friend_bridge'
   goal: string
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status: 'PLANNING' | 'RUNNING' | 'WAITING_USER_CONFIRMATION' | 'BLOCKED_EXTERNAL_AUTH' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
   current_step: number
   max_steps: number
   progress: number
   message: string
+  analysis_id?: string
+  analysis_a_id?: string
+  analysis_b_id?: string
+  transfer_preview_id?: string
+  use_demo: boolean
+  data_state: DataState
+  decision_mode: 'LLM' | 'DETERMINISTIC_FALLBACK'
+  decisions_json: string
+  normalized_intent_json: string
+  plan_json: string
+  completed_steps_json: string
+  pending_steps_json: string
+  tool_calls_json: string
+  tool_results_json: string
+  retries: number
+  warnings_json: string
+  checkpoint_json?: string
   input_tokens: number
   output_tokens: number
   estimated_cost_usd: number
@@ -295,6 +380,18 @@ export interface AgentTask {
   updated_at: number
   revision: number
 }
+
+export interface AgentStep {
+  step_id: string
+  label: string
+  tool: string
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+  attempts: number
+  last_error?: string
+}
+
+export interface AgentPlan { scenario: string; steps: AgentStep[] }
+export interface AgentDecision { action: string; next_tool?: string; arguments: Record<string, unknown>; reason: string; finish: boolean }
 
 export interface AgentSettings {
   endpoint: string

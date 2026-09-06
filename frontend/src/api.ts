@@ -1,4 +1,4 @@
-import type { AgentSettings, AgentTask, AppleMusicBootstrap, DemoPayload, ExportPreview, ExportResult, ImportPreview, ImportPreviewRequest, PlatformCapability, PlaylistLinkInspection, ProviderConfigurationStatus, SpotifyConnectionStatus, SpotifyImportResult, SpotifyPlaylistSummary, PersonalAnalysis, Track, WriterStatus, YouTubeConnectionStatus, YouTubeImportResult, YouTubePlaylistSummary } from './types'
+import type { AgentSettings, AgentTask, AlternateVersionSearchResult, AppleMusicBootstrap, ComparisonReport, DemoPayload, ExportPreview, ExportResult, ImportPreview, ImportPreviewRequest, PlatformCapability, PlaylistLinkInspection, ProviderConfigurationStatus, SpotifyConnectionStatus, SpotifyImportResult, SpotifyPlaylistSummary, PersonalAnalysis, Track, TransferPreview, TransferResult, TransferRun, VersionType, WriterStatus, YouTubeConnectionStatus, YouTubeImportResult, YouTubePlaylistSummary } from './types'
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, credentials: 'include' })
@@ -38,17 +38,36 @@ export const api = {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input),
   }),
   analyzeImport: (id: string) => request<PersonalAnalysis>(`/api/imports/${id}/analyze`, { method: 'POST' }),
+  compareAnalyses: (analysisA: PersonalAnalysis, analysisB: PersonalAnalysis) => request<ComparisonReport>('/api/compare', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ analysis_a: analysisA, analysis_b: analysisB, save_locally: false }),
+  }),
+  searchAlternateVersions: (track: Track, versionTypes: VersionType[], useMock = false) => request<AlternateVersionSearchResult>('/api/alternate-versions/search', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ track, version_types: versionTypes, use_mock: useMock }),
+  }),
+  previewTransfer: (playlistName: string, tracks: Track[], destinationPlatform: 'spotify' | 'youtube', allowAlternateVersions: boolean, useMock: boolean) => request<TransferPreview>('/api/transfers/preview', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ playlist_name: playlistName, tracks, destination_platform: destinationPlatform, allow_alternate_versions: allowAlternateVersions, use_mock: useMock }),
+  }),
+  executeTransfer: (previewId: string, selections: Record<string, string>) => request<TransferResult>('/api/transfers/execute', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ preview_id: previewId, confirmed: true, selections, privacy: 'private' }),
+  }),
+  createTransferRun: (previewId: string, selections: Record<string, string>) => request<TransferRun>('/api/transfers/runs', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ preview_id: previewId, confirmed: true, selections, privacy: 'private' }),
+  }),
+  transferRun: (id: string) => request<TransferRun>(`/api/transfers/runs/${id}`),
+  cancelTransferRun: (id: string) => request<TransferRun>(`/api/transfers/runs/${id}/cancel`, { method: 'POST' }),
+  resumeTransferRun: (id: string) => request<TransferRun>(`/api/transfers/runs/${id}/resume`, { method: 'POST' }),
   previewExport: (platform: string, playlistName: string, tracks: Track[], format: string) => request<ExportPreview>('/api/exports/preview', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ platform, playlist_name: playlistName, tracks, format }),
   }),
   executeExport: (previewId: string, selections: Record<string, string>) => request<ExportResult>('/api/exports/execute', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ preview_id: previewId, confirmed: true, selections }),
   }),
-  createTask: (scenario: AgentTask['scenario'], goal?: string) => request<AgentTask>('/api/tasks', {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scenario, goal }),
+  createTask: (scenario: AgentTask['scenario'], goal: string | undefined, binding: { analysis_id?: string; analysis_a_id?: string; analysis_b_id?: string; use_demo: boolean }) => request<AgentTask>('/api/tasks', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scenario, goal, ...binding }),
   }),
   tasks: () => request<AgentTask[]>('/api/tasks'),
   cancelTask: (id: string) => request<AgentTask>(`/api/tasks/${id}/cancel`, { method: 'POST' }),
+  resumeTask: (id: string) => request<AgentTask>(`/api/tasks/${id}/resume`, { method: 'POST' }),
   settings: () => request<AgentSettings>('/api/settings'),
   saveSettings: (settings: AgentSettings) => request<AgentSettings>('/api/settings', {
     method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings),
