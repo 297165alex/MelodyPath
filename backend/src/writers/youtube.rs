@@ -63,7 +63,7 @@ impl YoutubeConfig {
             client_secret: nonempty_env("GOOGLE_CLIENT_SECRET")?,
             redirect_uri: nonempty_env("GOOGLE_REDIRECT_URI")
                 .or_else(|| public_endpoint("/api/youtube/callback"))?,
-            api_key: nonempty_env("YOUTUBE_API_KEY")?,
+            api_key: nonempty_env("YOUTUBE_API_KEY").unwrap_or_default(),
             frontend_url: nonempty_env("FRONTEND_URL")
                 .or_else(|| nonempty_env("PUBLIC_BASE_URL"))
                 .unwrap_or_else(|| "http://127.0.0.1:5173".into()),
@@ -110,7 +110,7 @@ impl std::fmt::Debug for YoutubeTokenSet {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct GoogleTokenResponse {
     access_token: String,
     refresh_token: Option<String>,
@@ -178,7 +178,15 @@ impl YoutubePlaylistWriter {
     }
 
     pub fn is_configured(&self) -> bool {
-        self.config.is_some()
+        self.config.as_ref().is_some_and(|config| {
+            reqwest::Url::parse(&config.redirect_uri).is_ok_and(|url| {
+                matches!(url.scheme(), "http" | "https")
+                    && url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.fragment().is_none()
+            })
+        })
     }
 
     pub fn configuration_status(&self) -> ProviderConfigurationStatus {
@@ -186,7 +194,6 @@ impl YoutubePlaylistWriter {
             "GOOGLE_CLIENT_ID",
             "GOOGLE_CLIENT_SECRET",
             "GOOGLE_REDIRECT_URI",
-            "YOUTUBE_API_KEY",
         ];
         let (present, missing) = if self.config.is_some() {
             (required.iter().map(|item| (*item).into()).collect(), vec![])
@@ -211,14 +218,14 @@ impl YoutubePlaylistWriter {
             .unwrap_or_else(|| DEFAULT_GOOGLE_REDIRECT_URI.into());
         let redirect_valid = reqwest::Url::parse(&redirect_uri)
             .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some());
-        let configured = missing.is_empty() && redirect_valid;
+        let configured = missing.is_empty() && redirect_valid && self.is_configured();
         ProviderConfigurationStatus {
             platform: "youtube".into(),
             display_name: "YouTube / YouTube Music".into(),
             configured,
             validation_status: if !missing.is_empty() {
                 "missing_environment_variables"
-            } else if !redirect_valid {
+            } else if !redirect_valid || !self.is_configured() {
                 "invalid_redirect_uri"
             } else {
                 "ready_for_oauth"
@@ -233,7 +240,7 @@ impl YoutubePlaylistWriter {
                 "在 Google Cloud 创建项目并启用 YouTube Data API v3。".into(),
                 "配置 OAuth consent screen，并创建 Web application 类型的 OAuth Client。".into(),
                 format!("在 Authorized redirect URIs 中精确添加 {redirect_uri}。"),
-                "创建受限的 YouTube Data API Key；把四项配置只写入后端环境变量后重启。".into(),
+                "把三项 OAuth 配置只写入后端环境变量后重启；YOUTUBE_API_KEY 仅用于可选的未授权 API 检查。".into(),
             ],
             secrets_exposed_to_frontend: false,
             message: if configured {
@@ -249,6 +256,10 @@ impl YoutubePlaylistWriter {
         let Some(config) = self.config.as_ref() else {
             return status;
         };
+        if config.api_key.is_empty() {
+            status.message = "OAuth 配置已存在，可开始 Google 官方授权；YouTube API 是否启用、权限与额度将在授权后验证。API Key 为可选配置。".into();
+            return status;
+        }
         let response = self
             .client
             .get(format!(
@@ -275,24 +286,29 @@ impl YoutubePlaylistWriter {
                     response.status()
                 );
             }
-            Err(error) => {
+            Err(_) => {
                 status.validation_status = "network_check_failed".into();
-                status.message = format!("无法连接 YouTube Data API：{error}");
+                status.message =
+                    "无法连接 YouTube Data API，请检查网络；请求地址和凭据不会回显。".into();
             }
         }
         status
     }
 
     pub async fn begin_authorization(&self) -> Result<String> {
+        if !self.is_configured() {
+            bail!("CONFIG_REQUIRED: YouTube OAuth 未配置或回调地址无效");
+        }
         let config = self
             .config
             .as_ref()
             .context("YouTube OAuth 未配置；请先打开配置向导")?;
         let state = random_token();
-        self.pending_states
-            .write()
-            .await
-            .insert(state.clone(), now_secs());
+        {
+            let mut pending = self.pending_states.write().await;
+            pending.retain(|_, created| now_secs().saturating_sub(*created) <= 600);
+            pending.insert(state.clone(), now_secs());
+        }
         Ok(format!(
             "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&access_type=offline&include_granted_scopes=true&prompt=consent&state={}",
             config.authorize_url,
@@ -335,6 +351,9 @@ impl YoutubePlaylistWriter {
             .context("Google 拒绝了授权码")?
             .json()
             .await?;
+        if token.access_token.trim().is_empty() {
+            bail!("YouTube token 响应缺少有效 access token");
+        }
         let (channel_id, display_name, avatar_url) =
             self.fetch_channel_profile(&token.access_token).await?;
         let session = random_token();
@@ -361,7 +380,8 @@ impl YoutubePlaylistWriter {
                 channel_id: None,
                 display_name: None,
                 avatar_url: None,
-                message: "尚未配置 Google OAuth 与 YouTube Data API。".into(),
+                message: "CONFIG_REQUIRED：尚未配置有效的 Google OAuth 与 YouTube Data API。"
+                    .into(),
                 policy_notice: YOUTUBE_POLICY_NOTICE.into(),
             };
         }
@@ -418,7 +438,8 @@ impl YoutubePlaylistWriter {
             .query(&[("part", "snippet"), ("mine", "true"), ("maxResults", "1")])
             .send()
             .await?
-            .error_for_status()?
+            .error_for_status()
+            .context("YouTube 频道读取失败：请检查 YouTube Data API 启用状态、OAuth 权限与额度")?
             .json()
             .await?;
         let channel = payload
@@ -474,6 +495,9 @@ impl YoutubePlaylistWriter {
             .error_for_status()?
             .json()
             .await?;
+        if response.access_token.trim().is_empty() {
+            bail!("YouTube 刷新响应缺少有效 access token");
+        }
         let refreshed = YoutubeTokenSet {
             access_token: response.access_token,
             refresh_token: response.refresh_token.or(existing.refresh_token),
@@ -522,7 +546,9 @@ impl YoutubePlaylistWriter {
             if let Some(value) = page_token.as_deref() {
                 request = request.query(&[("pageToken", value)]);
             }
-            let payload: Value = request.send().await?.error_for_status()?.json().await?;
+            let payload: Value = checked_youtube_response(request.send().await?)?
+                .json()
+                .await?;
             for item in payload
                 .get("items")
                 .and_then(Value::as_array)
@@ -618,7 +644,9 @@ impl YoutubePlaylistWriter {
                 if let Some(value) = page_token.as_deref() {
                     request = request.query(&[("pageToken", value)]);
                 }
-                let payload: Value = request.send().await?.error_for_status()?.json().await?;
+                let payload: Value = checked_youtube_response(request.send().await?)?
+                    .json()
+                    .await?;
                 for item in payload
                     .get("items")
                     .and_then(Value::as_array)
@@ -677,7 +705,6 @@ impl YoutubePlaylistWriter {
                     ("type", "video"),
                     ("maxResults", "5"),
                     ("q", query),
-                    ("key", config.api_key.as_str()),
                 ])
                 .send()
                 .await;
@@ -692,7 +719,7 @@ impl YoutubePlaylistWriter {
                 }
                 Ok(response) => {
                     let status = response.status();
-                    last_error = Some(anyhow::anyhow!("YouTube 搜索 HTTP {status}"));
+                    last_error = Some(anyhow::anyhow!("{}", youtube_status_message(status)));
                     if !is_retryable_status(status) {
                         break;
                     }
@@ -723,11 +750,7 @@ impl YoutubePlaylistWriter {
                 config.api_base_url.trim_end_matches('/')
             ))
             .bearer_auth(access_token)
-            .query(&[
-                ("part", "contentDetails"),
-                ("id", joined_ids.as_str()),
-                ("key", config.api_key.as_str()),
-            ])
+            .query(&[("part", "contentDetails"), ("id", joined_ids.as_str())])
             .send()
             .await?
             .error_for_status()?
@@ -1035,6 +1058,25 @@ impl PlaylistWriter for YoutubePlaylistWriter {
     }
 }
 
+fn checked_youtube_response(response: reqwest::Response) -> Result<reqwest::Response> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    bail!("{}", youtube_status_message(status));
+}
+
+fn youtube_status_message(status: reqwest::StatusCode) -> String {
+    let action = match status.as_u16() {
+        401 => "授权已失效，请重新连接 Google 账号",
+        403 => "权限或额度受限，请检查 YouTube Data API 已启用、OAuth 授权范围与项目额度",
+        404 => "播放列表不存在或当前账号不可访问，请重新选择",
+        429 => "请求过于频繁，请稍后重试",
+        _ => "平台请求失败，请稍后重试并检查配置",
+    };
+    format!("YouTube HTTP {status}：{action}")
+}
+
 static NOISE_GROUP: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\s*[\[(][^\])]*(official\s*(music\s*)?video|official\s*audio|lyrics?|audio|mv)[^\])]*[\])]\s*")
         .expect("YouTube title noise regex is valid")
@@ -1331,5 +1373,272 @@ mod tests {
         assert_eq!(parse_iso8601_duration_ms("PT3M25S"), Some(205_000));
         assert_eq!(parse_iso8601_duration_ms("PT1H2M3S"), Some(3_723_000));
         assert_eq!(parse_iso8601_duration_ms("unknown"), None);
+    }
+    #[tokio::test]
+    async fn missing_config_and_absent_token_never_connect() {
+        let writer = YoutubePlaylistWriter::from_config(None, Client::new());
+        assert!(
+            writer
+                .begin_authorization()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("CONFIG_REQUIRED")
+        );
+        let status = writer.connection_status(None).await;
+        assert!(!status.configured && !status.connected);
+        let writer = YoutubePlaylistWriter::from_config(
+            Some(YoutubeConfig {
+                client_id: "synthetic".into(),
+                client_secret: "synthetic".into(),
+                redirect_uri: DEFAULT_GOOGLE_REDIRECT_URI.into(),
+                api_key: "synthetic".into(),
+                frontend_url: "http://127.0.0.1:5173".into(),
+                authorize_url: "http://127.0.0.1:9/auth".into(),
+                token_url: "http://127.0.0.1:9/token".into(),
+                api_base_url: "http://127.0.0.1:9".into(),
+            }),
+            Client::new(),
+        );
+        assert!(!writer.connection_status(None).await.connected);
+        assert!(!writer.connection_status(Some("unknown")).await.connected);
+    }
+
+    #[tokio::test]
+    async fn expired_state_is_consumed_and_invalid_redirect_is_blocked() {
+        let mut config = YoutubeConfig {
+            client_id: "synthetic".into(),
+            client_secret: "synthetic".into(),
+            redirect_uri: DEFAULT_GOOGLE_REDIRECT_URI.into(),
+            api_key: "synthetic".into(),
+            frontend_url: "http://127.0.0.1:5173".into(),
+            authorize_url: "http://127.0.0.1:9/auth".into(),
+            token_url: "http://127.0.0.1:9/token".into(),
+            api_base_url: "http://127.0.0.1:9".into(),
+        };
+        let writer = YoutubePlaylistWriter::from_config(Some(config.clone()), Client::new());
+        writer
+            .pending_states
+            .write()
+            .await
+            .insert("expired".into(), now_secs() - 601);
+        assert!(
+            writer
+                .complete_authorization("synthetic", "expired")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("过期")
+        );
+        assert!(!writer.pending_states.read().await.contains_key("expired"));
+        config.redirect_uri = "javascript:alert(1)".into();
+        let writer = YoutubePlaylistWriter::from_config(Some(config), Client::new());
+        assert!(!writer.is_configured());
+        assert!(!writer.configuration_status().configured);
+        assert!(writer.begin_authorization().await.is_err());
+    }
+
+    #[test]
+    fn token_response_requires_access_token() {
+        assert!(serde_json::from_value::<GoogleTokenResponse>(json!({"expires_in":3600})).is_err());
+    }
+    // Explicit local HTTP fixtures verify protocol behavior, never real platform access.
+    #[tokio::test]
+    async fn synthetic_oauth_exchange_connects_only_with_valid_token_and_identity() {
+        use axum::{
+            Json, Router,
+            routing::{get, post},
+        };
+        for mode in ["valid", "missing", "empty"] {
+            let app = Router::new()
+                .route("/token", post(move || async move { Json(match mode {
+                    "missing" => json!({"expires_in":3600}),
+                    "empty" => json!({"access_token":"", "expires_in":3600}),
+                    _ => json!({"access_token":"synthetic-access", "refresh_token":"synthetic-refresh", "expires_in":3600}),
+                }) }))
+                .route("/channels", get(|| async { Json(json!({"items":[{"id":"synthetic-channel","snippet":{"title":"Synthetic Channel"}}]})) }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let mut config = YoutubeConfig {
+                client_id: "synthetic".into(),
+                client_secret: "synthetic".into(),
+                redirect_uri: DEFAULT_GOOGLE_REDIRECT_URI.into(),
+                api_key: "synthetic".into(),
+                frontend_url: "http://127.0.0.1:5173".into(),
+                authorize_url: "http://127.0.0.1:9/auth".into(),
+                token_url: "http://127.0.0.1:9/token".into(),
+                api_base_url: "http://127.0.0.1:9".into(),
+            };
+            config.token_url = format!("{base}/token");
+            config.api_base_url = base;
+            let writer = YoutubePlaylistWriter::from_config(Some(config), Client::new());
+            let authorize = writer.begin_authorization().await.unwrap();
+            let state = reqwest::Url::parse(&authorize)
+                .unwrap()
+                .query_pairs()
+                .find(|(key, _)| key == "state")
+                .unwrap()
+                .1
+                .into_owned();
+            let result = writer
+                .complete_authorization("synthetic-code", &state)
+                .await;
+            if mode == "valid" {
+                let (session, _) = result.unwrap();
+                let status = writer.connection_status(Some(&session)).await;
+                assert!(status.connected);
+                assert!(
+                    !serde_json::to_string(&status)
+                        .unwrap()
+                        .contains("synthetic-access")
+                );
+                assert!(
+                    writer
+                        .complete_authorization("synthetic-code", &state)
+                        .await
+                        .is_err()
+                );
+                assert!(writer.disconnect(Some(&session)).await);
+                assert!(!writer.connection_status(Some(&session)).await.connected);
+            } else {
+                assert!(result.is_err());
+                assert!(writer.sessions.read().await.is_empty());
+            }
+            server.abort();
+        }
+    }
+
+    #[test]
+    fn youtube_permission_errors_offer_action_without_response_body() {
+        assert!(youtube_status_message(reqwest::StatusCode::FORBIDDEN).contains("权限或额度"));
+        assert!(youtube_status_message(reqwest::StatusCode::UNAUTHORIZED).contains("重新连接"));
+        assert!(youtube_status_message(reqwest::StatusCode::NOT_FOUND).contains("不可访问"));
+    }
+
+    #[tokio::test]
+    async fn synthetic_youtube_playlist_pagination_reads_all_pages() {
+        use axum::{Json, Router, extract::Query, routing::get};
+        async fn playlists(Query(query): Query<HashMap<String, String>>) -> Json<Value> {
+            if query.contains_key("pageToken") {
+                Json(
+                    json!({"items":[{"id":"p2","snippet":{"title":"Second"},"contentDetails":{"itemCount":0}}]}),
+                )
+            } else {
+                Json(
+                    json!({"items":[{"id":"p1","snippet":{"title":"First"},"contentDetails":{"itemCount":0}}],"nextPageToken":"next"}),
+                )
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/playlists", get(playlists)))
+                .await
+                .unwrap()
+        });
+        let writer = YoutubePlaylistWriter::from_config(
+            Some(YoutubeConfig {
+                client_id: "synthetic".into(),
+                client_secret: "synthetic".into(),
+                api_key: "synthetic".into(),
+                redirect_uri: DEFAULT_GOOGLE_REDIRECT_URI.into(),
+                frontend_url: "http://127.0.0.1:5173".into(),
+                authorize_url: "http://127.0.0.1:9/auth".into(),
+                token_url: "http://127.0.0.1:9/token".into(),
+                api_base_url: base,
+            }),
+            Client::new(),
+        );
+        writer.sessions.write().await.insert(
+            "synthetic-session".into(),
+            YoutubeTokenSet {
+                access_token: "synthetic".into(),
+                refresh_token: None,
+                expires_at: now_secs() + 3600,
+                channel_id: "synthetic".into(),
+                display_name: "Synthetic".into(),
+                avatar_url: None,
+            },
+        );
+        let playlists = writer
+            .list_playlists(Some("synthetic-session"))
+            .await
+            .unwrap();
+        assert_eq!(
+            playlists.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            ["p1", "p2"]
+        );
+        server.abort();
+    }
+    #[tokio::test]
+    async fn oauth_search_and_duration_use_bearer_without_api_key() {
+        use axum::{Json, Router, extract::Query, http::HeaderMap, routing::get};
+        async fn search(
+            headers: HeaderMap,
+            Query(query): Query<HashMap<String, String>>,
+        ) -> Json<Value> {
+            assert_eq!(headers["authorization"], "Bearer synthetic-access");
+            assert!(!query.contains_key("key"));
+            Json(json!({"items":[]}))
+        }
+        async fn videos(
+            headers: HeaderMap,
+            Query(query): Query<HashMap<String, String>>,
+        ) -> Json<Value> {
+            assert_eq!(headers["authorization"], "Bearer synthetic-access");
+            assert!(!query.contains_key("key"));
+            Json(json!({"items":[{"id":"synthetic-video","contentDetails":{"duration":"PT3M"}}]}))
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/search", get(search))
+                    .route("/videos", get(videos)),
+            )
+            .await
+            .unwrap()
+        });
+        let writer = YoutubePlaylistWriter::from_config(
+            Some(YoutubeConfig {
+                client_id: "synthetic".into(),
+                client_secret: "synthetic".into(),
+                api_key: String::new(),
+                redirect_uri: DEFAULT_GOOGLE_REDIRECT_URI.into(),
+                frontend_url: "http://127.0.0.1:5173".into(),
+                authorize_url: "http://127.0.0.1:9/auth".into(),
+                token_url: "http://127.0.0.1:9/token".into(),
+                api_base_url: base,
+            }),
+            Client::new(),
+        );
+        assert!(writer.is_configured());
+        let status = writer.validate_configuration().await;
+        assert!(status.configured);
+        assert!(
+            !status
+                .required_environment_variables
+                .iter()
+                .any(|name| name == "YOUTUBE_API_KEY")
+        );
+        assert!(writer.begin_authorization().await.is_ok());
+        assert!(
+            writer
+                .search_items("synthetic-access", "test")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            writer
+                .video_durations("synthetic-access", &["synthetic-video".into()])
+                .await
+                .unwrap()["synthetic-video"],
+            180000
+        );
+        server.abort();
     }
 }

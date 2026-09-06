@@ -1,4 +1,6 @@
-use crate::models::{DataUseCapabilities, PlatformCapability, PlaylistLinkInspection};
+use crate::models::{
+    DataUseCapabilities, PlatformCapability, PlaylistLinkInspection, PublicLinkCapability,
+};
 use anyhow::{Context, Result};
 use reqwest::{Client, Url, redirect::Policy};
 use std::time::Duration;
@@ -81,7 +83,7 @@ impl PlatformService {
         youtube_configured: bool,
         apple_configured: bool,
     ) -> Vec<PlatformCapability> {
-        vec![
+        let mut capabilities = vec![
             PlatformCapability {
                 platform: "netease".into(),
                 auth_supported: false,
@@ -105,7 +107,7 @@ impl PlatformService {
                 capability_status: "qualification_required".into(),
                 status_label: "需要平台接入资格".into(),
                 account_connection: "requires_official_credentials".into(),
-                public_playlist_links: "recognition_and_access_check".into(),
+                public_playlist_links: "ACCESSIBILITY_CHECK_ONLY".into(),
                 playlist_read: "not_verified_for_public_web".into(),
                 playlist_write: "requires_official_credentials".into(),
                 search_links: true,
@@ -140,7 +142,7 @@ impl PlatformService {
                 capability_status: "qualification_required".into(),
                 status_label: "需要平台接入资格".into(),
                 account_connection: "restricted_official_sdk".into(),
-                public_playlist_links: "recognition_and_access_check".into(),
+                public_playlist_links: "ACCESSIBILITY_CHECK_ONLY".into(),
                 playlist_read: "not_verified_for_public_web".into(),
                 playlist_write: "requires_platform_approval".into(),
                 search_links: true,
@@ -175,7 +177,7 @@ impl PlatformService {
                 capability_status: "qualification_required".into(),
                 status_label: "需要平台接入资格".into(),
                 account_connection: "official_sdk_only".into(),
-                public_playlist_links: "not_implemented".into(),
+                public_playlist_links: "URL_RECOGNITION_ONLY".into(),
                 playlist_read: "requires_platform_approval".into(),
                 playlist_write: "requires_platform_approval".into(),
                 search_links: false,
@@ -210,7 +212,7 @@ impl PlatformService {
                 capability_status: "not_connected".into(),
                 status_label: "尚未接通".into(),
                 account_connection: "not_verified".into(),
-                public_playlist_links: "not_implemented".into(),
+                public_playlist_links: "UNSUPPORTED".into(),
                 playlist_read: "not_verified".into(),
                 playlist_write: "not_verified".into(),
                 search_links: false,
@@ -250,7 +252,7 @@ impl PlatformService {
                 capability_status: if spotify_configured { "official_oauth_ready" } else { "needs_configuration" }.into(),
                 status_label: if spotify_configured { "官方账号连接已支持" } else { "需要配置开发者应用" }.into(),
                 account_connection: "official_authorization_code".into(),
-                public_playlist_links: "recognition_only".into(),
+                public_playlist_links: "AUTH_REQUIRED".into(),
                 playlist_read: if spotify_configured { "official_api_transfer_only" } else { "needs_configuration" }.into(),
                 playlist_write: if spotify_configured { "official_api" } else { "needs_configuration" }.into(),
                 search_links: true,
@@ -285,7 +287,7 @@ impl PlatformService {
                 capability_status: "import_only".into(),
                 status_label: "仅文件或文本导入".into(),
                 account_connection: "not_implemented".into(),
-                public_playlist_links: "not_implemented".into(),
+                public_playlist_links: "URL_RECOGNITION_ONLY".into(),
                 playlist_read: "planned".into(),
                 playlist_write: "planned".into(),
                 search_links: true,
@@ -330,7 +332,7 @@ impl PlatformService {
                 capability_status: if youtube_configured { "official_oauth_ready" } else { "needs_configuration" }.into(),
                 status_label: if youtube_configured { "官方账号连接已支持" } else { "完成配置即可使用" }.into(),
                 account_connection: "official_google_oauth".into(),
-                public_playlist_links: "recognition_only".into(),
+                public_playlist_links: "AUTH_REQUIRED".into(),
                 playlist_read: if youtube_configured { "official_api_transfer_only" } else { "needs_configuration" }.into(),
                 playlist_write: if youtube_configured { "official_api" } else { "needs_configuration" }.into(),
                 search_links: true,
@@ -342,13 +344,31 @@ impl PlatformService {
                 policy_notice: Some("YouTube API 数据保留来源标注，不用于 API 未提供的派生画像或跨平台评分。".into()),
                 data_use: youtube_data_use(),
             },
-        ]
+        ];
+        let mut qishui = capabilities
+            .iter()
+            .find(|item| item.platform == "kuwo")
+            .unwrap()
+            .clone();
+        qishui.platform = "qishui".into();
+        qishui.display_name = "汽水音乐".into();
+        qishui.public_playlist_links = "URL_RECOGNITION_ONLY".into();
+        qishui.status_label = "仅文件或文本导入".into();
+        qishui.action_kind = "import".into();
+        qishui.reason = "当前只识别已知官方域名，未验证歌单 ID 解析或官方曲目读取接口。".into();
+        qishui.description = qishui.reason.clone();
+        qishui.official_docs_url = Some("https://qishui.douyin.com/".into());
+        capabilities.push(qishui);
+        capabilities
     }
 
     pub async fn inspect_link(&self, raw: &str) -> Result<PlaylistLinkInspection> {
         let recognized = recognize_link(raw)?;
         let Some(link) = recognized else {
             return Ok(PlaylistLinkInspection {
+                capability: PublicLinkCapability::Unsupported,
+                url_valid: false,
+                playlist_id_valid: false,
                 platform: None,
                 platform_label: None,
                 recognized: false,
@@ -367,8 +387,20 @@ impl PlatformService {
             });
         };
 
-        let mut link = link;
+        let initial = recognition_result(&link);
+        // Account APIs are a separate, explicitly authorized Copy flow. Never scrape
+        // their pages or route platform data into the local analysis importer.
         let parsed = Url::parse(raw.trim()).context("公开歌单链接格式无效")?;
+        let official_short_link = parsed
+            .host_str()
+            .is_some_and(|host| host_matches(host, "163cn.tv"))
+            && parsed.path().len() > 1;
+        if !matches!(link.platform, "netease" | "qq_music")
+            || (link.playlist_id.is_none() && !official_short_link)
+        {
+            return Ok(initial);
+        }
+        let mut link = link;
         let response = self
             .client
             .get(parsed)
@@ -415,14 +447,17 @@ impl PlatformService {
                     response.status()
                 ),
             ),
-            Err(error) => (
+            Err(_) => (
                 None,
                 "check_failed".to_string(),
-                format!("无法可靠检查公开页面：{error}。未使用 Cookie、账号密码或逆向接口。"),
+                "公开页面检查失败，请检查网络或使用本地文件导入；当前不能读取完整曲目。".into(),
             ),
         };
 
         Ok(PlaylistLinkInspection {
+            capability: PublicLinkCapability::AccessibilityCheckOnly,
+            url_valid: true,
+            playlist_id_valid: link.playlist_id.is_some(),
             platform: Some(link.platform.into()),
             platform_label: Some(link.label.into()),
             recognized: true,
@@ -481,6 +516,13 @@ fn host_matches(host: &str, domain: &str) -> bool {
 }
 
 fn allowed_host(url: &Url) -> bool {
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !matches!(url.port(), None | Some(80) | Some(443))
+    {
+        return false;
+    }
     let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
         return false;
     };
@@ -493,6 +535,9 @@ fn allowed_host(url: &Url) -> bool {
         "youtube.com",
         "youtu.be",
         "music.youtube.com",
+        "music.apple.com",
+        "kugou.com",
+        "qishui.douyin.com",
     ]
     .iter()
     .any(|domain| host_matches(&host, domain))
@@ -520,9 +565,17 @@ fn recognize_link(raw: &str) -> Result<Option<RecognizedLink>> {
         return Ok(None);
     }
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    // NetEase's /#/playlist?id=... is a client-side route, not an HTTP query.
+    let effective = url
+        .fragment()
+        .filter(|f| f.starts_with("/playlist?"))
+        .and_then(|f| Url::parse(&format!("https://{host}{f}")).ok());
+    let route = effective.as_ref().unwrap_or(&url);
     if host_matches(&host, "music.163.com") || host_matches(&host, "163cn.tv") {
         let playlist_id =
-            query_value(&url, &["id", "playlistId"]).or_else(|| numeric_path_id(&url));
+            query_value(route, &["id", "playlistId"]).or_else(|| numeric_path_id(route));
+        let playlist_id =
+            playlist_id.filter(|id| route.path().contains("playlist") && numeric_id(id));
         return Ok(Some(RecognizedLink {
             platform: "netease",
             label: "网易云音乐",
@@ -535,6 +588,9 @@ fn recognize_link(raw: &str) -> Result<Option<RecognizedLink>> {
     if host_matches(&host, "y.qq.com") {
         let playlist_id =
             query_value(&url, &["id", "dissid", "playlistId"]).or_else(|| numeric_path_id(&url));
+        let playlist_id = playlist_id.filter(|id| {
+            (url.path().contains("playlist") || url.path().contains("taoge")) && numeric_id(id)
+        });
         return Ok(Some(RecognizedLink {
             platform: "qq_music",
             label: "QQ音乐",
@@ -552,6 +608,7 @@ fn recognize_link(raw: &str) -> Result<Option<RecognizedLink>> {
                     .find(|part| *part == "playlist")
                     .and_then(|_| parts.next())
             })
+            .filter(|id| id.len() == 22 && id.bytes().all(|b| b.is_ascii_alphanumeric()))
             .map(str::to_string);
         return Ok(Some(RecognizedLink {
             platform: "spotify",
@@ -563,7 +620,13 @@ fn recognize_link(raw: &str) -> Result<Option<RecognizedLink>> {
         }));
     }
     if host_matches(&host, "youtube.com") || host_matches(&host, "youtu.be") {
-        let playlist_id = query_value(&url, &["list"]);
+        let playlist_id = query_value(&url, &["list"]).filter(|id| {
+            (url.path() == "/playlist" || url.path() == "/watch" || host == "youtu.be")
+                && (10..=100).contains(&id.len())
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        });
         return Ok(Some(RecognizedLink {
             platform: "youtube_music",
             label: "YouTube Music",
@@ -573,7 +636,90 @@ fn recognize_link(raw: &str) -> Result<Option<RecognizedLink>> {
             playlist_id,
         }));
     }
+    if host == "music.apple.com" {
+        let playlist_id = url
+            .path_segments()
+            .and_then(|mut parts| parts.find(|p| *p == "playlist").and_then(|_| parts.last()))
+            .filter(|id| {
+                id.starts_with("pl.")
+                    && id.len() > 3
+                    && id[3..]
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            })
+            .map(str::to_owned);
+        return Ok(Some(RecognizedLink {
+            platform: "apple_music",
+            label: "Apple Music",
+            playlist_id,
+            normalized_url: None,
+        }));
+    }
+    if host_matches(&host, "kugou.com") || host == "qishui.douyin.com" {
+        let (platform, label) = if host_matches(&host, "kugou.com") {
+            ("kugou", "酷狗音乐")
+        } else {
+            ("qishui", "汽水音乐")
+        };
+        // Domain recognition only: no unverified share-token/playlist-ID decoding.
+        return Ok(Some(RecognizedLink {
+            platform,
+            label,
+            playlist_id: None,
+            normalized_url: None,
+        }));
+    }
     Ok(None)
+}
+
+fn numeric_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 20 && id.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn recognition_result(link: &RecognizedLink) -> PlaylistLinkInspection {
+    let auth = matches!(link.platform, "spotify" | "youtube_music") && link.playlist_id.is_some();
+    PlaylistLinkInspection {
+        capability: if auth {
+            PublicLinkCapability::AuthRequired
+        } else {
+            PublicLinkCapability::UrlRecognitionOnly
+        },
+        url_valid: true,
+        playlist_id_valid: link.playlist_id.is_some(),
+        platform: Some(link.platform.into()),
+        platform_label: Some(link.label.into()),
+        recognized: true,
+        playlist_id: link.playlist_id.clone(),
+        normalized_url: link.normalized_url.clone(),
+        resolved_url: None,
+        publicly_accessible: None,
+        access_status: "not_checked".into(),
+        structured_data_status: "not_checked".into(),
+        playlist_name: None,
+        track_count: None,
+        preview_tracks: vec![],
+        can_analyze: false,
+        message: if auth {
+            format!(
+                "已识别 {} playlist；当前不能通过此链接读取完整曲目，需要官方 OAuth 并在 Copy Playlist 选择账号可访问的歌单。",
+                link.label
+            )
+        } else if link.playlist_id.is_none() {
+            format!(
+                "已识别 {} 域名，但未提取到有效歌单 ID；当前不能读取完整曲目。请检查是否为完整歌单链接。",
+                link.label
+            )
+        } else {
+            "已识别链接，但当前不能读取完整曲目。当前项目没有接通该平台的官方公开歌单读取接口。"
+                .into()
+        },
+        next_step: if auth {
+            "配置 Provider 并连接官方账号，然后进入 Copy Playlist；平台数据不用于画像或 LLM。"
+                .into()
+        } else {
+            "请使用本地文件或粘贴歌曲清单；尚无本项目可用的官方曲目导入接口。".into()
+        },
+    }
 }
 
 #[cfg(test)]
@@ -610,20 +756,24 @@ mod tests {
 
     #[test]
     fn spotify_and_youtube_ids_are_normalized() {
-        let spotify = recognize_link("https://open.spotify.com/playlist/abc123?si=x")
+        let spotify =
+            recognize_link("https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=x")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            spotify.playlist_id.as_deref(),
+            Some("37i9dQZF1DXcBWIGoYBM5M")
+        );
+        let youtube = recognize_link("https://music.youtube.com/playlist?list=PLabcdefghijk")
             .unwrap()
             .unwrap();
-        assert_eq!(spotify.playlist_id.as_deref(), Some("abc123"));
-        let youtube = recognize_link("https://music.youtube.com/playlist?list=PLabc")
-            .unwrap()
-            .unwrap();
-        assert_eq!(youtube.playlist_id.as_deref(), Some("PLabc"));
+        assert_eq!(youtube.playlist_id.as_deref(), Some("PLabcdefghijk"));
     }
 
     #[test]
     fn capability_matrix_never_advertises_fake_connect_or_writer() {
         let capabilities = PlatformService::new().capabilities(false, false, false);
-        for platform in ["netease", "qq_music", "kugou", "kuwo"] {
+        for platform in ["netease", "qq_music", "kugou", "kuwo", "qishui"] {
             let item = capabilities
                 .iter()
                 .find(|item| item.platform == platform)
@@ -660,5 +810,91 @@ mod tests {
             .unwrap();
         assert_eq!(apple.status, "IMPORT_ONLY");
         assert!(!apple.auth_supported && !apple.configured);
+    }
+    #[tokio::test]
+    async fn public_links_never_invent_tracks_or_real_verification() {
+        for (url, expected) in [
+            (
+                "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+                PublicLinkCapability::AuthRequired,
+            ),
+            (
+                "https://music.youtube.com/playlist?list=PLabcdefghijk",
+                PublicLinkCapability::AuthRequired,
+            ),
+            (
+                "https://music.apple.com/cn/playlist/test/pl.abc123",
+                PublicLinkCapability::UrlRecognitionOnly,
+            ),
+            (
+                "https://www.kugou.com/share/test",
+                PublicLinkCapability::UrlRecognitionOnly,
+            ),
+            (
+                "https://qishui.douyin.com/share/test",
+                PublicLinkCapability::UrlRecognitionOnly,
+            ),
+            (
+                "https://example.org/playlist/123",
+                PublicLinkCapability::Unsupported,
+            ),
+        ] {
+            let result = PlatformService::new().inspect_link(url).await.unwrap();
+            assert_eq!(result.capability, expected);
+            assert!(result.preview_tracks.is_empty());
+            assert!(result.track_count.is_none());
+            assert!(!result.can_analyze);
+            assert!(
+                !serde_json::to_string(&result)
+                    .unwrap()
+                    .contains("REAL_VERIFIED")
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_urls_and_unsafe_authorities_are_rejected() {
+        assert!(recognize_link("not a URL").is_err());
+        for url in [
+            "file:///etc/passwd",
+            "https://user:pass@open.spotify.com/playlist/test",
+            "http://music.163.com:8080/playlist?id=123",
+            "https://music.163.com.evil.example/playlist?id=123",
+        ] {
+            assert!(recognize_link(url).unwrap().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn supported_domains_with_invalid_ids_do_not_trigger_network_or_import() {
+        for url in [
+            "https://open.spotify.com/playlist/invalid",
+            "https://www.youtube.com/playlist?list=bad!",
+            "https://music.163.com/playlist?id=abc",
+            "https://music.163.com/song?id=123456",
+            "https://y.qq.com/n/ryqq/playlist/not-an-id",
+            "https://music.apple.com/cn/album/test/123",
+        ] {
+            let result = PlatformService::new().inspect_link(url).await.unwrap();
+            assert_eq!(result.capability, PublicLinkCapability::UrlRecognitionOnly);
+            assert!(!result.playlist_id_valid);
+            assert_eq!(result.access_status, "not_checked");
+            assert!(result.preview_tracks.is_empty());
+        }
+    }
+
+    #[test]
+    fn netease_fragment_route_and_page_structure_are_not_track_import() {
+        let link = recognize_link("https://music.163.com/#/playlist?id=123456")
+            .unwrap()
+            .unwrap();
+        assert_eq!(link.playlist_id.as_deref(), Some("123456"));
+        assert_eq!(
+            inspect_public_structure(
+                br#"<script type="application/ld+json">{"@type":"MusicPlaylist"}</script>"#
+            ),
+            "schema_org_playlist_found_policy_unverified"
+        );
+        assert!(recognition_result(&link).preview_tracks.is_empty());
     }
 }

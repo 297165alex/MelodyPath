@@ -717,6 +717,9 @@ pub struct PlaylistLinkRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaylistLinkInspection {
+    pub capability: PublicLinkCapability,
+    pub url_valid: bool,
+    pub playlist_id_valid: bool,
     pub platform: Option<String>,
     pub platform_label: Option<String>,
     pub recognized: bool,
@@ -732,6 +735,17 @@ pub struct PlaylistLinkInspection {
     pub can_analyze: bool,
     pub message: String,
     pub next_step: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum PublicLinkCapability {
+    Unsupported,
+    UrlRecognitionOnly,
+    AccessibilityCheckOnly,
+    PublicMetadataAvailable,
+    TrackImportAvailable,
+    AuthRequired,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

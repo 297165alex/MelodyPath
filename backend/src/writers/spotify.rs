@@ -117,7 +117,7 @@ pub struct SpotifyPlaylistWriter {
     session_store: Option<SecureJsonStore>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
@@ -176,7 +176,15 @@ impl SpotifyPlaylistWriter {
     }
 
     pub fn is_configured(&self) -> bool {
-        self.config.is_some()
+        self.config.as_ref().is_some_and(|config| {
+            reqwest::Url::parse(&config.redirect_uri).is_ok_and(|url| {
+                matches!(url.scheme(), "http" | "https")
+                    && url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.fragment().is_none()
+            })
+        })
     }
 
     pub fn configuration_status(&self) -> ProviderConfigurationStatus {
@@ -208,14 +216,14 @@ impl SpotifyPlaylistWriter {
             .unwrap_or_else(|| DEFAULT_SPOTIFY_REDIRECT_URI.into());
         let redirect_valid = reqwest::Url::parse(&redirect_uri)
             .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some());
-        let configured = missing.is_empty() && redirect_valid;
+        let configured = missing.is_empty() && redirect_valid && self.is_configured();
         ProviderConfigurationStatus {
             platform: "spotify".into(),
             display_name: "Spotify".into(),
             configured,
             validation_status: if !missing.is_empty() {
                 "missing_environment_variables"
-            } else if !redirect_valid {
+            } else if !redirect_valid || !self.is_configured() {
                 "invalid_redirect_uri"
             } else {
                 "ready_for_oauth"
@@ -289,7 +297,9 @@ impl SpotifyPlaylistWriter {
                 user_id: None,
                 display_name: None,
                 avatar_url: None,
-                message: "尚未配置 Spotify Developer 应用。Demo 与文件导出仍可运行。".into(),
+                message:
+                    "CONFIG_REQUIRED：尚未配置有效的 Spotify Developer 应用。文件导入仍可运行。"
+                        .into(),
                 policy_notice: SPOTIFY_POLICY_NOTICE.into(),
             };
         }
@@ -515,15 +525,19 @@ impl SpotifyPlaylistWriter {
     }
 
     pub async fn begin_authorization(&self) -> Result<String> {
+        if !self.is_configured() {
+            bail!("CONFIG_REQUIRED: Spotify OAuth 未配置或回调地址无效");
+        }
         let config = self
             .config
             .as_ref()
             .context("Spotify OAuth 未配置：请设置 SPOTIFY_CLIENT_ID 与 SPOTIFY_CLIENT_SECRET。")?;
         let state = random_token();
-        self.pending_states
-            .write()
-            .await
-            .insert(state.clone(), now_secs());
+        {
+            let mut pending = self.pending_states.write().await;
+            pending.retain(|_, created| now_secs().saturating_sub(*created) <= 600);
+            pending.insert(state.clone(), now_secs());
+        }
         Ok(format!(
             "{}?response_type=code&client_id={}&scope={}&redirect_uri={}&state={}",
             config.accounts_authorize_url,
@@ -572,6 +586,9 @@ impl SpotifyPlaylistWriter {
             .json()
             .await
             .context("Spotify token 响应无法解析")?;
+        if token.access_token.trim().is_empty() {
+            bail!("Spotify token 响应缺少有效 access token");
+        }
         let profile: Value = self
             .client
             .get(format!("{}/me", config.api_base_url.trim_end_matches('/')))
@@ -650,6 +667,9 @@ impl SpotifyPlaylistWriter {
             .error_for_status()?
             .json()
             .await?;
+        if response.access_token.trim().is_empty() {
+            bail!("Spotify 刷新响应缺少有效 access token");
+        }
         let refreshed = TokenSet {
             access_token: response.access_token,
             refresh_token: response.refresh_token.or(existing.refresh_token),
@@ -1190,5 +1210,109 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(imported.track_count, 2);
+    }
+    #[tokio::test]
+    async fn missing_config_and_absent_token_never_connect() {
+        let writer = SpotifyPlaylistWriter::from_config(None, Client::new());
+        assert!(
+            writer
+                .begin_authorization()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("CONFIG_REQUIRED")
+        );
+        let status = writer.connection_status(None).await;
+        assert!(!status.configured && !status.connected);
+        let writer = SpotifyPlaylistWriter::from_config(Some(test_config()), Client::new());
+        assert!(!writer.connection_status(None).await.connected);
+        assert!(!writer.connection_status(Some("unknown")).await.connected);
+    }
+
+    #[tokio::test]
+    async fn expired_state_is_consumed_and_invalid_redirect_is_blocked() {
+        let mut config = test_config();
+        let writer = SpotifyPlaylistWriter::from_config(Some(config.clone()), Client::new());
+        writer
+            .pending_states
+            .write()
+            .await
+            .insert("expired".into(), now_secs() - 601);
+        assert!(
+            writer
+                .complete_authorization("synthetic", "expired")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("过期")
+        );
+        assert!(!writer.pending_states.read().await.contains_key("expired"));
+        config.redirect_uri = "javascript:alert(1)".into();
+        let writer = SpotifyPlaylistWriter::from_config(Some(config), Client::new());
+        assert!(!writer.is_configured());
+        assert!(!writer.configuration_status().configured);
+        assert!(writer.begin_authorization().await.is_err());
+    }
+
+    #[test]
+    fn token_response_requires_access_token() {
+        assert!(serde_json::from_value::<TokenResponse>(json!({"expires_in":3600})).is_err());
+    }
+    // Explicit local HTTP fixtures verify protocol behavior, never real platform access.
+    #[tokio::test]
+    async fn synthetic_oauth_exchange_connects_only_with_valid_token_and_identity() {
+        use axum::{
+            Json, Router,
+            routing::{get, post},
+        };
+        for mode in ["valid", "missing", "empty"] {
+            let app = Router::new()
+                .route("/token", post(move || async move { Json(match mode {
+                    "missing" => json!({"expires_in":3600}),
+                    "empty" => json!({"access_token":"", "expires_in":3600}),
+                    _ => json!({"access_token":"synthetic-access", "refresh_token":"synthetic-refresh", "expires_in":3600}),
+                }) }))
+                .route("/me", get(|| async { Json(json!({"id":"synthetic-user","display_name":"Synthetic User"})) }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let mut config = test_config();
+            config.accounts_token_url = format!("{base}/token");
+            config.api_base_url = base;
+            let writer = SpotifyPlaylistWriter::from_config(Some(config), Client::new());
+            let authorize = writer.begin_authorization().await.unwrap();
+            let state = reqwest::Url::parse(&authorize)
+                .unwrap()
+                .query_pairs()
+                .find(|(key, _)| key == "state")
+                .unwrap()
+                .1
+                .into_owned();
+            let result = writer
+                .complete_authorization("synthetic-code", &state)
+                .await;
+            if mode == "valid" {
+                let (session, _) = result.unwrap();
+                let status = writer.connection_status(Some(&session)).await;
+                assert!(status.connected);
+                assert!(
+                    !serde_json::to_string(&status)
+                        .unwrap()
+                        .contains("synthetic-access")
+                );
+                assert!(
+                    writer
+                        .complete_authorization("synthetic-code", &state)
+                        .await
+                        .is_err()
+                );
+                assert!(writer.disconnect(Some(&session)).await);
+                assert!(!writer.connection_status(Some(&session)).await.connected);
+            } else {
+                assert!(result.is_err());
+                assert!(writer.sessions.read().await.is_empty());
+            }
+            server.abort();
+        }
     }
 }

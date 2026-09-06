@@ -203,7 +203,10 @@ fn app(state: AppState) -> Router {
         .route("/api/exports/preview", post(export_preview))
         .route("/api/exports/execute", post(export_execute))
         .route("/api/exports/{id}/download", get(download_export))
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<Body>| {
+            // OAuth codes/state are in the query; headers may contain sessions.
+            tracing::info_span!("http_request", method = %request.method(), path = %request.uri().path())
+        }))
         .with_state(state)
 }
 
@@ -1315,22 +1318,35 @@ async fn youtube_disconnect(
     Ok(response)
 }
 
-async fn youtube_authorize(State(state): State<AppState>) -> Result<Redirect, ApiError> {
-    let url = state
-        .youtube
-        .begin_authorization()
-        .await
-        .map_err(|error| ApiError::bad_request(error.to_string()))?;
-    Ok(Redirect::temporary(&url))
+async fn youtube_authorize(State(state): State<AppState>) -> Response {
+    match state.youtube.begin_authorization().await {
+        Ok(url) => oauth_start_redirect(&url, "youtube"),
+        Err(_) => oauth_redirect(
+            &state.youtube.frontend_url(),
+            "youtube",
+            "error",
+            "config_required",
+        ),
+    }
 }
 
 async fn youtube_callback(
     State(app): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<SpotifyCallback>,
 ) -> Response {
     let frontend = app.youtube.frontend_url();
-    if query.error.is_some() {
-        return oauth_redirect(&frontend, "youtube", "error", "authorization_cancelled");
+    if let Some(error) = query.error.as_deref() {
+        return oauth_redirect(
+            &frontend,
+            "youtube",
+            "error",
+            if error == "access_denied" {
+                "authorization_cancelled"
+            } else {
+                "provider_error"
+            },
+        );
     }
     let Some(code) = query.code.as_deref() else {
         return oauth_redirect(&frontend, "youtube", "error", "missing_code");
@@ -1338,27 +1354,33 @@ async fn youtube_callback(
     let Some(state) = query.state.as_deref() else {
         return oauth_redirect(&frontend, "youtube", "error", "missing_state");
     };
+    if !oauth_browser_state_matches(&headers, "youtube", state) {
+        return oauth_redirect(&frontend, "youtube", "error", "state_mismatch");
+    }
     let (session, frontend) = match app.youtube.complete_authorization(code, state).await {
         Ok(result) => result,
-        Err(_) => {
-            return oauth_redirect(&frontend, "youtube", "error", "authorization_failed");
+        Err(error) => {
+            return oauth_redirect(&frontend, "youtube", "error", oauth_error_reason(&error));
         }
     };
     let cookie = session_cookie("melody_youtube_session", &session, 28_800);
     let mut response = oauth_redirect(&frontend, "youtube", "connected", "success");
     if let Ok(value) = HeaderValue::from_str(&cookie) {
-        response.headers_mut().insert(header::SET_COOKIE, value);
+        response.headers_mut().append(header::SET_COOKIE, value);
     }
     response
 }
 
-async fn spotify_authorize(State(state): State<AppState>) -> Result<Redirect, ApiError> {
-    let url = state
-        .spotify
-        .begin_authorization()
-        .await
-        .map_err(|error| ApiError::bad_request(error.to_string()))?;
-    Ok(Redirect::temporary(&url))
+async fn spotify_authorize(State(state): State<AppState>) -> Response {
+    match state.spotify.begin_authorization().await {
+        Ok(url) => oauth_start_redirect(&url, "spotify"),
+        Err(_) => oauth_redirect(
+            &state.spotify.frontend_url(),
+            "spotify",
+            "error",
+            "config_required",
+        ),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1370,11 +1392,21 @@ struct SpotifyCallback {
 
 async fn spotify_callback(
     State(app): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<SpotifyCallback>,
 ) -> Response {
     let frontend = app.spotify.frontend_url();
-    if query.error.is_some() {
-        return oauth_redirect(&frontend, "spotify", "error", "authorization_cancelled");
+    if let Some(error) = query.error.as_deref() {
+        return oauth_redirect(
+            &frontend,
+            "spotify",
+            "error",
+            if error == "access_denied" {
+                "authorization_cancelled"
+            } else {
+                "provider_error"
+            },
+        );
     }
     let Some(code) = query.code.as_deref() else {
         return oauth_redirect(&frontend, "spotify", "error", "missing_code");
@@ -1382,18 +1414,62 @@ async fn spotify_callback(
     let Some(state) = query.state.as_deref() else {
         return oauth_redirect(&frontend, "spotify", "error", "missing_state");
     };
+    if !oauth_browser_state_matches(&headers, "spotify", state) {
+        return oauth_redirect(&frontend, "spotify", "error", "state_mismatch");
+    }
     let (session, frontend) = match app.spotify.complete_authorization(code, state).await {
         Ok(result) => result,
-        Err(_) => {
-            return oauth_redirect(&frontend, "spotify", "error", "authorization_failed");
+        Err(error) => {
+            return oauth_redirect(&frontend, "spotify", "error", oauth_error_reason(&error));
         }
     };
     let cookie = session_cookie("melody_spotify_session", &session, 28_800);
     let mut response = oauth_redirect(&frontend, "spotify", "connected", "success");
     if let Ok(value) = HeaderValue::from_str(&cookie) {
-        response.headers_mut().insert(header::SET_COOKIE, value);
+        response.headers_mut().append(header::SET_COOKIE, value);
     }
     response
+}
+
+fn oauth_browser_state_matches(headers: &HeaderMap, provider: &str, state: &str) -> bool {
+    !state.is_empty()
+        && named_auth_session(headers, &format!("melody_{provider}_oauth_state"))
+            .is_some_and(|expected| expected == state)
+}
+
+fn oauth_start_redirect(url: &str, provider: &str) -> Response {
+    let state = reqwest::Url::parse(url).ok().and_then(|url| {
+        url.query_pairs()
+            .find(|(key, _)| key == "state")
+            .map(|(_, value)| value.into_owned())
+    });
+    let Some(state) = state else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let mut response = Redirect::temporary(url).into_response();
+    if let Ok(cookie) = HeaderValue::from_str(&session_cookie(
+        &format!("melody_{provider}_oauth_state"),
+        &state,
+        600,
+    )) {
+        response.headers_mut().append(header::SET_COOKIE, cookie);
+    }
+    response
+}
+
+fn oauth_error_reason(error: &anyhow::Error) -> &'static str {
+    let message = error.to_string();
+    if message.contains("state") {
+        "state_mismatch"
+    } else if message.contains("未配置") {
+        "config_required"
+    } else if message.contains("权限") {
+        "permission_denied"
+    } else if message.contains("频道") {
+        "channel_required"
+    } else {
+        "authorization_failed"
+    }
 }
 
 fn oauth_redirect(frontend: &str, provider: &str, status: &str, reason: &str) -> Response {
@@ -1407,7 +1483,15 @@ fn oauth_redirect(frontend: &str, provider: &str, status: &str, reason: &str) ->
         .append_pair("oauth", status)
         .append_pair("provider", provider)
         .append_pair("reason", reason);
-    Redirect::temporary(url.as_str()).into_response()
+    let mut response = Redirect::temporary(url.as_str()).into_response();
+    if let Ok(cookie) = HeaderValue::from_str(&session_cookie(
+        &format!("melody_{provider}_oauth_state"),
+        "",
+        0,
+    )) {
+        response.headers_mut().append(header::SET_COOKIE, cookie);
+    }
+    response
 }
 
 fn session_cookie(name: &str, value: &str, max_age: u32) -> String {
@@ -1886,6 +1970,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let preview: models::TransferPreview = serde_json::from_slice(&body).unwrap();
+        assert!(preview.is_mock);
+        assert_eq!(preview.status, "MOCK_VERIFIED");
+        assert!(!String::from_utf8_lossy(&body).contains("REAL_VERIFIED"));
         let execute_request = serde_json::json!({
             "preview_id": preview.preview_id,
             "confirmed": true,
@@ -1960,5 +2047,113 @@ mod tests {
         let artifact = build_file_artifact("test", "csv", &[item]).unwrap();
         let text = String::from_utf8_lossy(&artifact.bytes);
         assert!(text.contains("\"A, \"\"quoted\"\" song\""));
+    }
+    #[test]
+    fn oauth_state_is_bound_to_browser_and_provider() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("melody_spotify_oauth_state=expected"),
+        );
+        assert!(oauth_browser_state_matches(&headers, "spotify", "expected"));
+        assert!(!oauth_browser_state_matches(&headers, "spotify", "forged"));
+        assert!(!oauth_browser_state_matches(
+            &headers, "youtube", "expected"
+        ));
+        assert!(!oauth_browser_state_matches(
+            &HeaderMap::new(),
+            "spotify",
+            "expected"
+        ));
+        let response = oauth_start_redirect(
+            "https://accounts.spotify.com/authorize?state=synthetic",
+            "spotify",
+        );
+        let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(
+            cookie.contains("HttpOnly")
+                && cookie.contains("SameSite=Lax")
+                && cookie.contains("Max-Age=600")
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_errors_and_cross_browser_states_never_connect() {
+        for provider in ["spotify", "youtube"] {
+            for (query, reason) in [
+                ("error=access_denied", "authorization_cancelled"),
+                ("error=invalid_client", "provider_error"),
+                ("code=synthetic", "missing_state"),
+                ("code=synthetic&state=forged", "state_mismatch"),
+            ] {
+                let response = test_app()
+                    .await
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .uri(format!("/api/{provider}/callback?{query}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let location = response.headers()[header::LOCATION].to_str().unwrap();
+                assert!(location.contains(reason));
+                assert!(!location.contains("synthetic") && !location.contains("connected"));
+                assert!(
+                    response.headers()[header::SET_COOKIE]
+                        .to_str()
+                        .unwrap()
+                        .contains("Max-Age=0")
+                );
+            }
+        }
+    }
+    #[tokio::test]
+    async fn public_link_http_contract_does_not_return_fake_tracks() {
+        let router = test_app().await;
+        for (url, expected_status, expected_capability) in [
+            ("not a URL", StatusCode::BAD_REQUEST, ""),
+            (
+                "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+                StatusCode::OK,
+                "AUTH_REQUIRED",
+            ),
+            (
+                "https://www.youtube.com/playlist?list=PLabcdefghijk",
+                StatusCode::OK,
+                "AUTH_REQUIRED",
+            ),
+            (
+                "https://music.163.com/song?id=123456",
+                StatusCode::OK,
+                "URL_RECOGNITION_ONLY",
+            ),
+            (
+                "https://example.org/playlist/123",
+                StatusCode::OK,
+                "UNSUPPORTED",
+            ),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/api/playlists/inspect-link")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::json!({"url":url}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected_status);
+            if expected_status == StatusCode::OK {
+                let body = to_bytes(response.into_body(), 16384).await.unwrap();
+                let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(result["capability"], expected_capability);
+                assert_eq!(result["can_analyze"], false);
+                assert_eq!(result["preview_tracks"].as_array().unwrap().len(), 0);
+            }
+        }
     }
 }

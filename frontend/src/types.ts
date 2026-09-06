@@ -239,12 +239,16 @@ export interface ProviderConfigurationStatus {
   present_environment_variables: string[]
   missing_environment_variables: string[]
   redirect_uri?: string
-  developer_dashboard_url?: string
+  dashboard_url: string
   setup_steps: string[]
-  secrets_exposed: boolean
+  secrets_exposed_to_frontend: boolean
   message: string
 }
+export type PublicLinkCapability = 'UNSUPPORTED' | 'URL_RECOGNITION_ONLY' | 'ACCESSIBILITY_CHECK_ONLY' | 'PUBLIC_METADATA_AVAILABLE' | 'TRACK_IMPORT_AVAILABLE' | 'AUTH_REQUIRED'
 export interface PlaylistLinkInspection {
+  capability: PublicLinkCapability
+  url_valid: boolean
+  playlist_id_valid: boolean
   platform?: string
   platform_label?: string
   recognized: boolean
