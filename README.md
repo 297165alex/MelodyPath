@@ -6,13 +6,14 @@ MelodyPath 是一个以 Rust 为可信计算核心、用可解释 Agent 帮助�
 
 音乐平台擅长推荐“你已经喜欢的东西”，却很少解释为什么一首新歌适合你、它离当前偏好有多远，或两个人的歌单可以从哪里建立共同入口。MelodyPath 因此把歌曲解析、身份归一化、音乐画像、候选生成、确定性评分和执行权限放进一条可核验的工作流。
 
-项目目前包含五个主要场景：
+项目目前包含六个主要场景：
 
 - **可解释音乐探索 Agent**：围绕用户目标选择白名单 Rust 工具，并根据真实工具结果继续、重规划或结束。
 - **音乐偏好分析**：从文件或批量文本中计算 Genre、艺人、专辑、年代、重复曲目、合作曲目、集中度与多样性。
 - **推荐探索**：用真实 Last.fm 候选和本地评分生成舒适区、拓展区与惊喜区，并保留来源、种子和推荐理由。
 - **好友歌单比较**：比较两份用户提供的歌单，展示共同歌曲、共同艺人、相似度与双方都能理解的桥梁推荐。
 - **跨平台复制歌单**：首个 MVP 面向 Spotify → YouTube，先匹配和预览，再由用户处理歧义并确认创建新的私有播放列表。
+- **Version Radar / 版本雷达**：扫描已有歌曲，主动发现 Live、Concert、Remix、Acoustic、Unplugged、Remaster 等不同录音版本。
 
 MelodyPath 严格区分真实文件、真实文本、真实账号数据、显式 Demo 与错误状态。真实流程失败时不会自动切换到 Demo，也不会用固定歌曲伪装成实时推荐。
 
@@ -25,6 +26,36 @@ MelodyPath 严格区分真实文件、真实文本、真实账号数据、显式
 - npm
 
 真实 Last.fm 推荐需要后端环境中存在 `LASTFM_API_KEY`。没有该配置时，本地解析和音乐画像仍可运行，推荐区域会明确报告 Provider 未配置，不会回退 Demo。外部 LLM、Spotify 和 YouTube 均为可选配置，详见后文状态表。
+
+## 编译
+
+在项目根目录编译 Rust workspace：
+
+```powershell
+cargo build --workspace
+```
+
+在另一个终端中，从项目根目录安装前端依赖并编译：
+
+```powershell
+cd frontend
+npm install
+npm run build
+```
+
+## 配置 Endpoint / Key
+
+根目录 `.env.example` 是环境变量名称和示例地址的参考模板，不包含真实凭据；不要将示例文件的存在视为配置已经生效。启动前应在后端进程环境中提供所需变量。Windows 可通过系统环境变量界面设置当前用户变量，重新打开终端后启动；`start-backend.ps1` 也会在运行时加载其列出的 User scope 变量。
+
+- **基础功能无需 Key**：本地文件/文本解析与基础音乐画像可直接使用。
+- **真实推荐**：配置 `LASTFM_API_KEY`，用于 Discover 及 Agent 的真实推荐候选；无需终端用户登录 Last.fm。
+- **LLM Agent**：在启动后端的进程环境中提供 `OPENAI_API_KEY`，并在应用 Settings 中配置 OpenAI-compatible Endpoint 和 Model，使其与 Key 所属服务一致。`.env.example` 没有定义 Endpoint / Model 环境变量，不要自行猜测变量名；启动脚本的 User scope 加载列表也不包含 `OPENAI_API_KEY`，需确保启动终端已继承该变量。未配置 Key 时明确使用 `DETERMINISTIC_FALLBACK`，当前真实 LLM 验收仍未完成。
+- **Spotify 真实账号连接**：配置 `SPOTIFY_CLIENT_ID`、`SPOTIFY_CLIENT_SECRET`、`SPOTIFY_REDIRECT_URI`，可按需设置 `SPOTIFY_MARKET`；在 Spotify Developer Dashboard 登记完全一致的回调地址，并由用户在官方页面授权。
+- **YouTube / Google 真实账号连接**：配置 `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`、`GOOGLE_REDIRECT_URI`，在 Google Cloud 启用 YouTube Data API v3、登记完全一致的回调地址，并完成用户授权及额度准备。模板另列有 `YOUTUBE_API_KEY`，它不能替代账号 OAuth 授权。
+
+本地后端与 API 地址参考 `MELODYPATH_BIND`、`API_BASE_URL` 和 `VITE_API_PROXY_TARGET`；模板使用后端 `http://127.0.0.1:3000`。`FRONTEND_URL` 应与本次实际前端地址一致，一键启动脚本会将选定地址传给后端；手动启动时请以前端启动日志或 `start-melodypath.ps1` 最终输出的 Frontend 地址为准。部署时可参考模板中的 `PUBLIC_BASE_URL` 及 OAuth 回调说明。
+
+真实 Key 和 Secret 只保存在本机环境或安全凭据存储中，不应写入 README，也不得提交 Git。没有 Spotify / YouTube OAuth 配置或未完成授权时，账号连接不可视为可用，Mock 不代表真实平台验收。
 
 ## 1. 启动后端
 
@@ -52,15 +83,15 @@ npm install
 npm run dev
 ```
 
-请打开 Vite 输出的实际地址。仓库配置的默认开发端口是 `3001`；若端口被占用，Vite 会给出实际可用地址。
+请以前端启动日志实际输出的 Local 地址，或 `start-melodypath.ps1` 最终输出的 Frontend 地址为准。
 
-Windows 也可以在项目根目录一次启动前后端：
+Windows 推荐在安装前端依赖后，在项目根目录一次启动前后端：
 
 ```powershell
 .\start-melodypath.ps1
 ```
 
-脚本会避免重复启动服务、隐藏运行子进程、验证后端健康状态，并输出 `Frontend = ...`。不需要保持 PowerShell 窗口打开。
+脚本会复用已检测到的前端或启动新前端，并重启已有的 MelodyPath 后端；子进程隐藏运行，验证后端健康状态后输出 `Frontend = ...`。不需要保持 PowerShell 窗口打开。
 
 > 页面浏览提示
 > 
@@ -91,7 +122,7 @@ Windows 也可以在项目根目录一次启动前后端：
 
 ### 如何获得歌单文件？
 
-如果你的音乐歌单来自其他平台，可以通过以下方式导出：
+如果你的音乐歌单来自其他平台，可以通过平台合法导出功能、第三方合法导出工具，或整理为 `歌手 - 歌名` 后导入。以下方式不代表 MelodyPath 已支持直接登录这些平台；不要使用 Cookie、模拟登录、逆向接口或私有 API 绕过限制。
 
 ### Spotify
 
@@ -122,7 +153,7 @@ Artist - Track Name
 支持格式：
 Artist - Track
 
-### 网易云音乐 / QQ音乐 / 汽水音乐 / 其他平台
+### 网易云音乐 / QQ音乐 / 酷狗音乐 / 汽水音乐 / 其他平台
 
 由于不同平台开放接口不同，目前 MelodyPath 不要求用户登录这些平台。
 
@@ -142,7 +173,7 @@ Artist - Track
 如果暂时没有自己的歌单，可以直接使用项目提供的示例 CSV：
 
 
-examples/
+`examples/Happy_Mix.csv`
 
 
 体验：
@@ -178,6 +209,21 @@ examples/
 - **Compare**：进入 `/compare`，分别导入 Friend A 与 Friend B 的歌单，确认后进行临时比较。
 - **Version Radar**：进入 `/versions`，选择当前 Analysis 或本地文件并扫描其他录音版本。真实 YouTube 搜索需要完成 Google OAuth 与 YouTube Data API 配置。
 - **Copy Playlist**：进入 `/transfer` 查看 Spotify → YouTube 的匹配、预览、确认和执行流程。真实复制需要两端开发者配置及用户本人授权。
+
+### 课程演示用例
+
+使用仓库示例 `examples/Happy_Mix.csv`，按以下顺序操作：
+
+1. 按上述说明启动 MelodyPath，打开实际输出的前端地址。
+2. 在首页进入本地歌单导入，上传 `examples/Happy_Mix.csv`。
+3. 查看 Import Preview 并确认导入，然后查看 Music Profile。
+4. 进入 Discover，查看 Comfort / Expansion / Surprise，再点击“换一批”。真实候选需要 `LASTFM_API_KEY`；未配置时检查明确的 Provider 未配置提示。
+5. 进入 Agent，绑定刚才的分析结果，运行 Personal Music Exploration；没有 `OPENAI_API_KEY` 时检查 `DETERMINISTIC_FALLBACK` 标记。
+6. 进入 Compare，在 Friend A、Friend B 分别导入并确认歌单，测试 Friend Bridge。可在两侧使用同一示例验证比较流程，观察品味差异时再使用另一份自备文件。
+7. 进入 Version Radar，选择当前 Analysis，查看扫描流程及 OAuth 状态；真实 YouTube 搜索需要 Google OAuth 和 YouTube Data API 配置。
+8. 进入 Copy Playlist，查看 Spotify → YouTube 流程和当前 OAuth 状态。只有完成双端配置及授权、预览匹配并明确确认后，才能创建新的 YouTube 私有播放列表。
+
+演示无需用 Mock 冒充真实平台功能。Spotify / YouTube 真实账号连接仍依赖外部 OAuth 配置；当前双端真实复制尚未验收，配置或授权缺失时应展示实际阻塞状态。
 
 # Features
 
