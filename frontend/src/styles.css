@@ -243,3 +243,13 @@ h1, h2, h3, p { margin-top: 0; }
 .version-radar-results { margin-top: 20px; }
 .version-radar-results > .alternate-panel { margin-top: 10px; }
 .version-radar-results > .alternate-panel > small { display: block; margin: 4px 0 8px; color: var(--ink-soft); }
+
+/* Spotify picker keeps the action row outside the scrollable content. */
+.spotify-picker-fixed { display: flex; flex-direction: column; max-height: calc(100dvh - 32px); overflow: hidden; }
+.spotify-picker-fixed .modal-header, .spotify-picker-fixed .picker-footer { flex: 0 0 auto; }
+.spotify-picker-fixed .picker-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.spotify-picker-fixed .spotify-playlist-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; max-height: none; overscroll-behavior: contain; }
+.spotify-picker-fixed .picker-preview-body { min-height: 0; overflow-y: auto; }
+.spotify-picker-fixed .picker-footer { position: sticky; bottom: 0; z-index: 2; background: var(--paper); border-top: 1px solid var(--line); padding-top: 14px; flex-wrap: wrap; gap: 10px; }
+.spotify-picker-fixed .picker-footer > span { margin-right: auto; font-size: 12px; }
+.oauth-notice { position: sticky; top: 0; z-index: 20; font-size: 15px; padding: 18px; }

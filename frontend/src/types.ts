@@ -266,6 +266,7 @@ export interface PlaylistLinkInspection {
   next_step: string
 }
 export interface SpotifyConnectionStatus {
+  write_authorized: boolean
   configured: boolean
   connected: boolean
   user_id?: string

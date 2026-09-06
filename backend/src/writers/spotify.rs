@@ -22,7 +22,8 @@ use std::{
 };
 use tokio::sync::RwLock;
 
-const SCOPES: &str = "playlist-read-private playlist-read-collaborative playlist-modify-public playlist-modify-private user-read-private";
+const SCOPES: &str = "playlist-read-private playlist-read-collaborative";
+const WRITE_SCOPE: &str = "playlist-modify-private";
 pub const SPOTIFY_POLICY_NOTICE: &str = "依据 Spotify Developer Policy，Spotify 内容不会发送给 LLM、用于训练、建立用户画像或计算衍生听歌指标；这里只支持用户主动发起的歌单选择、合规传输与写回。";
 pub const DEFAULT_SPOTIFY_REDIRECT_URI: &str = "http://127.0.0.1:3000/api/spotify/callback";
 
@@ -89,6 +90,8 @@ struct TokenSet {
     spotify_user_id: String,
     display_name: String,
     avatar_url: Option<String>,
+    #[serde(default)]
+    granted_scopes: String,
 }
 
 impl std::fmt::Debug for TokenSet {
@@ -122,6 +125,8 @@ struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: u64,
+    #[serde(default)]
+    scope: String,
 }
 
 impl SpotifyPlaylistWriter {
@@ -292,6 +297,7 @@ impl SpotifyPlaylistWriter {
     pub async fn connection_status(&self, auth_session: Option<&str>) -> SpotifyConnectionStatus {
         if !self.is_configured() {
             return SpotifyConnectionStatus {
+                write_authorized: false,
                 configured: false,
                 connected: false,
                 user_id: None,
@@ -305,6 +311,10 @@ impl SpotifyPlaylistWriter {
         }
         match self.token(auth_session).await {
             Ok(token) => SpotifyConnectionStatus {
+                write_authorized: token
+                    .granted_scopes
+                    .split_whitespace()
+                    .any(|scope| scope == WRITE_SCOPE),
                 configured: true,
                 connected: true,
                 user_id: Some(token.spotify_user_id),
@@ -314,6 +324,7 @@ impl SpotifyPlaylistWriter {
                 policy_notice: SPOTIFY_POLICY_NOTICE.into(),
             },
             Err(_) => SpotifyConnectionStatus {
+                write_authorized: false,
                 configured: true,
                 connected: false,
                 user_id: None,
@@ -444,6 +455,16 @@ impl SpotifyPlaylistWriter {
             .into_iter()
             .map(|playlist| (playlist.id.clone(), playlist))
             .collect();
+        self.import_playlist_summaries(playlist_ids, &accessible_by_id, &token)
+            .await
+    }
+
+    async fn import_playlist_summaries(
+        &self,
+        playlist_ids: &[String],
+        accessible_by_id: &HashMap<String, SpotifyPlaylistSummary>,
+        token: &TokenSet,
+    ) -> Result<SpotifyImportResult> {
         let mut tracks = Vec::new();
         let mut imported_playlists = Vec::new();
         let mut seen_track_ids = std::collections::HashSet::new();
@@ -524,7 +545,55 @@ impl SpotifyPlaylistWriter {
         })
     }
 
+    pub async fn import_playlist_link(
+        &self,
+        id: &str,
+        session: Option<&str>,
+    ) -> Result<SpotifyImportResult> {
+        if id.len() != 22 || !id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            bail!("歌单 ID 格式无效");
+        }
+        let token = self.token(session).await?;
+        let config = self.config.as_ref().context("Spotify OAuth 未配置")?;
+        let metadata: Value = self
+            .client
+            .get(format!(
+                "{}/playlists/{}",
+                config.api_base_url.trim_end_matches('/'),
+                id
+            ))
+            .bearer_auth(&token.access_token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        if metadata.get("id").and_then(Value::as_str) != Some(id) {
+            bail!("Spotify 返回的歌单身份不匹配");
+        }
+        let summary = SpotifyPlaylistSummary {
+            id: id.into(),
+            name: metadata
+                .get("name")
+                .and_then(Value::as_str)
+                .context("歌单缺少名称")?
+                .into(),
+            owner_name: String::new(),
+            track_count: 0,
+            collaborative: false,
+            public: metadata.get("public").and_then(Value::as_bool),
+            spotify_url: Some(format!("https://open.spotify.com/playlist/{id}")),
+            image_url: None,
+        };
+        self.import_playlist_summaries(&[id.into()], &HashMap::from([(id.into(), summary)]), &token)
+            .await
+    }
+
     pub async fn begin_authorization(&self) -> Result<String> {
+        self.begin_authorization_for(false).await
+    }
+
+    pub async fn begin_authorization_for(&self, write: bool) -> Result<String> {
         if !self.is_configured() {
             bail!("CONFIG_REQUIRED: Spotify OAuth 未配置或回调地址无效");
         }
@@ -542,7 +611,11 @@ impl SpotifyPlaylistWriter {
             "{}?response_type=code&client_id={}&scope={}&redirect_uri={}&state={}",
             config.accounts_authorize_url,
             urlencoding::encode(&config.client_id),
-            urlencoding::encode(SCOPES),
+            urlencoding::encode(&if write {
+                format!("{} {}", SCOPES, WRITE_SCOPE)
+            } else {
+                SCOPES.into()
+            }),
             urlencoding::encode(&config.redirect_uri),
             urlencoding::encode(&state),
         ))
@@ -563,6 +636,7 @@ impl SpotifyPlaylistWriter {
         if now_secs().saturating_sub(created) > 600 {
             bail!("OAuth state 已过期，请重新授权");
         }
+        tracing::info!(provider = "spotify", oauth_stage = "state_validated");
         let token: TokenResponse = self
             .client
             .post(&config.accounts_token_url)
@@ -615,10 +689,15 @@ impl SpotifyPlaylistWriter {
             .and_then(|image| image.get("url"))
             .and_then(Value::as_str)
             .map(str::to_string);
+        tracing::info!(
+            provider = "spotify",
+            oauth_stage = "token_and_identity_validated"
+        );
         let session = random_token();
         self.sessions.write().await.insert(
             session.clone(),
             TokenSet {
+                granted_scopes: token.scope,
                 access_token: token.access_token,
                 refresh_token: token.refresh_token,
                 expires_at: now_secs() + token.expires_in.saturating_sub(30),
@@ -628,6 +707,7 @@ impl SpotifyPlaylistWriter {
             },
         );
         self.persist_sessions().await?;
+        tracing::info!(provider = "spotify", oauth_stage = "session_saved");
         Ok((session, config.frontend_url.clone()))
     }
 
@@ -671,6 +751,11 @@ impl SpotifyPlaylistWriter {
             bail!("Spotify 刷新响应缺少有效 access token");
         }
         let refreshed = TokenSet {
+            granted_scopes: if response.scope.is_empty() {
+                existing.granted_scopes.clone()
+            } else {
+                response.scope
+            },
             access_token: response.access_token,
             refresh_token: response.refresh_token.or(existing.refresh_token),
             expires_at: now_secs() + response.expires_in.saturating_sub(30),
@@ -863,10 +948,12 @@ impl PlaylistWriter for SpotifyPlaylistWriter {
                 "需要设置 Spotify OAuth 环境变量；P0 导出和 Demo 不受影响。",
             ));
         }
-        let authorized = match auth_session {
-            Some(session) => self.sessions.read().await.contains_key(session),
-            None => false,
-        };
+        let authorized = self.token(auth_session).await.is_ok_and(|token| {
+            token
+                .granted_scopes
+                .split_whitespace()
+                .any(|scope| scope == WRITE_SCOPE)
+        });
         Ok(status(
             "spotify",
             "Spotify",
@@ -876,7 +963,7 @@ impl PlaylistWriter for SpotifyPlaylistWriter {
             if authorized {
                 "已授权；写入前仍会要求预览并确认。"
             } else {
-                "OAuth 已配置，请先授权。"
+                "读取连接与写入授权分开；如需创建私有歌单，请单独授权写入。"
             },
         ))
     }
@@ -975,6 +1062,15 @@ impl PlaylistWriter for SpotifyPlaylistWriter {
         auth_session: Option<&str>,
     ) -> Result<CreatedPlaylist> {
         let token = self.token(auth_session).await?;
+        if !token
+            .granted_scopes
+            .split_whitespace()
+            .any(|scope| scope == WRITE_SCOPE)
+        {
+            bail!(
+                "WRITE_AUTH_REQUIRED：当前会话没有确认过歌单写入权限，请从 Copy Playlist 单独授权写入"
+            );
+        }
         let response: Value = self.client
             .post(format!(
                 "{}/me/playlists",
@@ -1007,6 +1103,15 @@ impl PlaylistWriter for SpotifyPlaylistWriter {
         auth_session: Option<&str>,
     ) -> Result<AddTracksOutcome> {
         let token = self.token(auth_session).await?;
+        if !token
+            .granted_scopes
+            .split_whitespace()
+            .any(|scope| scope == WRITE_SCOPE)
+        {
+            bail!(
+                "WRITE_AUTH_REQUIRED：当前会话没有确认过歌单写入权限，请从 Copy Playlist 单独授权写入"
+            );
+        }
         let mut added_ids = Vec::new();
         let mut failures = HashMap::new();
         for batch in track_ids.chunks(100) {
@@ -1118,6 +1223,7 @@ mod tests {
         writer.sessions.write().await.insert(
             "session".into(),
             TokenSet {
+                granted_scopes: String::new(),
                 access_token: "access-sensitive".into(),
                 refresh_token: Some("refresh-sensitive".into()),
                 expires_at: now_secs() + 300,
@@ -1191,6 +1297,7 @@ mod tests {
         writer.sessions.write().await.insert(
             "session".into(),
             TokenSet {
+                granted_scopes: String::new(),
                 access_token: "expired".into(),
                 refresh_token: Some("refresh".into()),
                 expires_at: 0,
@@ -1314,5 +1421,161 @@ mod tests {
             }
             server.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn least_privilege_authorize_urls_and_readonly_write_guard() {
+        let writer = SpotifyPlaylistWriter::from_config(Some(test_config()), Client::new());
+        for write in [false, true] {
+            let url =
+                reqwest::Url::parse(&writer.begin_authorization_for(write).await.unwrap()).unwrap();
+            let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
+            let expected = if write {
+                format!("{} {}", SCOPES, WRITE_SCOPE)
+            } else {
+                SCOPES.to_string()
+            };
+            assert_eq!(query["scope"], expected);
+            assert!(!query["scope"].contains("user-read-private"));
+        }
+        writer.sessions.write().await.insert(
+            "synthetic-session".into(),
+            TokenSet {
+                granted_scopes: SCOPES.into(),
+                access_token: "synthetic".into(),
+                refresh_token: None,
+                expires_at: now_secs() + 3600,
+                spotify_user_id: "synthetic".into(),
+                display_name: "Synthetic".into(),
+                avatar_url: None,
+            },
+        );
+        let status = writer.connection_status(Some("synthetic-session")).await;
+        assert!(status.connected);
+        assert!(!status.write_authorized);
+        assert!(
+            writer
+                .create_playlist("Synthetic", Some("synthetic-session"))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("WRITE_AUTH_REQUIRED")
+        );
+        assert!(
+            writer
+                .import_playlist_link("invalid!", Some("synthetic-session"))
+                .await
+                .is_err()
+        );
+        assert!(
+            writer
+                .add_tracks(
+                    "synthetic-list",
+                    &["synthetic-track".into()],
+                    Some("synthetic-session")
+                )
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("WRITE_AUTH_REQUIRED")
+        );
+        let valid_id = "1234567890123456789012";
+        assert!(writer.import_playlist_link(valid_id, None).await.is_err());
+        writer
+            .sessions
+            .write()
+            .await
+            .get_mut("synthetic-session")
+            .unwrap()
+            .expires_at = 0;
+        assert!(
+            !writer
+                .connection_status(Some("synthetic-session"))
+                .await
+                .connected
+        );
+        assert!(
+            writer
+                .import_playlist_link(valid_id, Some("synthetic-session"))
+                .await
+                .is_err()
+        );
+    }
+
+    // Synthetic HTTP fixture, never proof of real platform acceptance.
+    #[tokio::test]
+    async fn authorized_public_link_reads_official_pagination_and_propagates_failures() {
+        use axum::{Json, Router, extract::Query, http::HeaderMap, routing::get};
+        async fn metadata(headers: HeaderMap) -> Json<Value> {
+            assert_eq!(headers["authorization"], "Bearer synthetic-access");
+            Json(
+                json!({"id":"1234567890123456789012","name":"Synthetic public list","owner":{"id":"different-user"}}),
+            )
+        }
+        async fn items(
+            headers: HeaderMap,
+            Query(query): Query<HashMap<String, String>>,
+        ) -> Json<Value> {
+            assert_eq!(headers["authorization"], "Bearer synthetic-access");
+            let page = query
+                .get("offset")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            Json(
+                json!({"items":[{"item":{"id":format!("track-{page}"),"name":"Synthetic Song","type":"track","artists":[{"name":"Synthetic Artist"}],"duration_ms":180000}}],"total":2}),
+            )
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/playlists/1234567890123456789012", get(metadata))
+                    .route("/playlists/1234567890123456789012/items", get(items)),
+            )
+            .await
+            .unwrap()
+        });
+        let mut config = test_config();
+        config.api_base_url = base;
+        let writer = SpotifyPlaylistWriter::from_config(Some(config), Client::new());
+        writer.sessions.write().await.insert(
+            "synthetic-session".into(),
+            TokenSet {
+                granted_scopes: SCOPES.into(),
+                access_token: "synthetic-access".into(),
+                refresh_token: None,
+                expires_at: now_secs() + 3600,
+                spotify_user_id: "synthetic".into(),
+                display_name: "Synthetic".into(),
+                avatar_url: None,
+            },
+        );
+        let result = writer
+            .import_playlist_link("1234567890123456789012", Some("synthetic-session"))
+            .await
+            .unwrap();
+        assert_eq!(result.track_count, 2);
+        assert_eq!(result.tracks.len(), 2);
+        assert!(
+            result
+                .tracks
+                .iter()
+                .all(|track| track.platform == "spotify")
+        );
+        assert!(
+            writer
+                .import_playlist_link("2234567890123456789012", Some("synthetic-session"))
+                .await
+                .is_err()
+        );
+        server.abort();
+        assert!(
+            writer
+                .import_playlist_link("1234567890123456789012", Some("synthetic-session"))
+                .await
+                .is_err()
+        );
     }
 }

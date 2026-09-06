@@ -66,8 +66,9 @@ export default function ExportModal({ initialPlatform, tracks, sourceLabel, stat
         {status && <div className={`status-strip ${status.availability}`}>
           <span className={`status-dot ${status.authorized ? 'online' : ''}`} />
           <span>{status.message}</span>
-          {platform === 'spotify' && status.availability === 'available' && !status.authorized && <a className="mini-button" href="/api/spotify/authorize">通过 OAuth 授权</a>}
+          {['spotify', 'youtube'].includes(platform) && status.availability === 'available' && !status.authorized && <a className="mini-button" href={`/api/${platform}/authorize?write=true`}>单独授权歌单写入</a>}
         </div>}
+        {platform === 'youtube' && <p className="policy-box">Google 没有仅限歌单写入的 scope；仅需读取时无需升级。写入授权文案也涵盖视频、评论等操作，但本应用只允许用户确认后新建私有歌单及添加视频。</p>}
         <label className="field"><span>新歌单名称</span><input value={playlistName} maxLength={100} onChange={(event) => setPlaylistName(event.target.value)} /></label>
         {platform === 'file' && <label className="field"><span>导出格式</span><select value={format} onChange={(event) => setFormat(event.target.value)}><option value="csv">CSV（推荐）</option><option value="json">JSON</option><option value="m3u">M3U8</option></select></label>}
         <div className="selection-heading"><div><strong>歌曲预览</strong><span>{chosenTracks.length} / {tracks.length} 首已选择</span></div><button className="text-button" onClick={() => setSelected(selected.size === tracks.length ? new Set() : new Set(tracks.map((t) => t.id)))}>{selected.size === tracks.length ? '取消全选' : '选择全部'}</button></div>

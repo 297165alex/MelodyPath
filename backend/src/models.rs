@@ -750,6 +750,7 @@ pub enum PublicLinkCapability {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpotifyConnectionStatus {
+    pub write_authorized: bool,
     pub configured: bool,
     pub connected: bool,
     pub user_id: Option<String>,
@@ -796,6 +797,7 @@ pub struct SpotifyImportResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YoutubeConnectionStatus {
+    pub write_authorized: bool,
     pub configured: bool,
     pub connected: bool,
     pub channel_id: Option<String>,

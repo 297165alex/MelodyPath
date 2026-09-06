@@ -1178,18 +1178,100 @@ async fn apple_musickit_bootstrap(
 
 async fn inspect_playlist_link(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<PlaylistLinkRequest>,
 ) -> Result<Json<models::PlaylistLinkInspection>, ApiError> {
+    use models::PublicLinkCapability;
     if request.url.trim().len() > 2_048 {
         return Err(ApiError::bad_request("链接过长"));
     }
-    Ok(Json(
+    let mut result = state
+        .platforms
+        .inspect_link(&request.url)
+        .await
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    if result.capability != PublicLinkCapability::AuthRequired {
+        return Ok(Json(result));
+    }
+    let id = result.playlist_id.as_deref().unwrap_or_default();
+    let spotify = result.platform.as_deref() == Some("spotify");
+    let session = if spotify {
+        auth_session(&headers)
+    } else {
+        youtube_auth_session(&headers)
+    };
+    let connected = if spotify {
         state
-            .platforms
-            .inspect_link(&request.url)
+            .spotify
+            .connection_status(session.as_deref())
             .await
-            .map_err(|error| ApiError::bad_request(error.to_string()))?,
-    ))
+            .connected
+    } else {
+        state
+            .youtube
+            .connection_status(session.as_deref())
+            .await
+            .connected
+    };
+    if !connected {
+        result.message =
+            "AUTH_REQUIRED：未连接平台或 OAuth session 已过期，请先通过官方页面重新授权。".into();
+        return Ok(Json(result));
+    }
+    let imported = if spotify {
+        state
+            .spotify
+            .import_playlist_link(id, session.as_deref())
+            .await
+            .map(|r| (r.playlists.first().map(|p| p.name.clone()), r.tracks))
+    } else {
+        state
+            .youtube
+            .import_playlist_link(id, session.as_deref())
+            .await
+            .map(|r| (r.playlists.first().map(|p| p.name.clone()), r.tracks))
+    };
+    match imported {
+        Ok((name, tracks)) => {
+            result.capability = if tracks.is_empty() {
+                PublicLinkCapability::PublicMetadataAvailable
+            } else {
+                PublicLinkCapability::TrackImportAvailable
+            };
+            result.playlist_name = name;
+            result.track_count = Some(tracks.len());
+            result.preview_tracks = tracks;
+            result.access_status = "official_api_read".into();
+            result.structured_data_status = "official_api".into();
+            result.message =
+                "官方 API 已返回 Import Preview；仅用于用户确认后的传输，不进入画像、推荐或 LLM。"
+                    .into();
+            result.next_step =
+                "核对曲目后可进入 Copy Playlist 预览；此操作尚未创建或写入任何播放列表。".into();
+            // Platform API content must never go to the local analysis/LLM pipeline.
+            result.can_analyze = false;
+        }
+        Err(error) => {
+            let expired = error
+                .chain()
+                .filter_map(|cause| cause.downcast_ref::<reqwest::Error>())
+                .any(|cause| cause.status() == Some(reqwest::StatusCode::UNAUTHORIZED));
+            result.capability = if expired {
+                PublicLinkCapability::AuthRequired
+            } else {
+                PublicLinkCapability::UrlRecognitionOnly
+            };
+            result.access_status = "official_api_read_failed".into();
+            result.message = "无法通过官方 API 读取该 playlist，请确认账号权限、播放列表可访问性和 API 额度；没有返回替代歌曲。".into();
+            result.next_step =
+                "检查权限后重试；若会话失效，请重新连接。也可使用本地文件导入。".into();
+            if expired {
+                result.message =
+                    "AUTH_REQUIRED：OAuth session 已失效，请重新连接后再读取歌单。".into();
+            }
+        }
+    }
+    Ok(Json(result))
 }
 
 async fn spotify_me(
@@ -1259,12 +1341,15 @@ async fn youtube_me(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Json<models::YoutubeConnectionStatus> {
-    Json(
-        state
-            .youtube
-            .connection_status(youtube_auth_session(&headers).as_deref())
-            .await,
-    )
+    let session = youtube_auth_session(&headers);
+    let status = state.youtube.connection_status(session.as_deref()).await;
+    tracing::info!(
+        provider = "youtube",
+        oauth_stage = "session_status",
+        session_cookie_present = session.is_some(),
+        connected = status.connected
+    );
+    Json(status)
 }
 
 async fn youtube_playlists(
@@ -1318,8 +1403,11 @@ async fn youtube_disconnect(
     Ok(response)
 }
 
-async fn youtube_authorize(State(state): State<AppState>) -> Response {
-    match state.youtube.begin_authorization().await {
+async fn youtube_authorize(
+    State(state): State<AppState>,
+    Query(request): Query<OAuthStart>,
+) -> Response {
+    match state.youtube.begin_authorization_for(request.write).await {
         Ok(url) => oauth_start_redirect(&url, "youtube"),
         Err(_) => oauth_redirect(
             &state.youtube.frontend_url(),
@@ -1336,6 +1424,11 @@ async fn youtube_callback(
     Query(query): Query<SpotifyCallback>,
 ) -> Response {
     let frontend = app.youtube.frontend_url();
+    tracing::info!(
+        provider = "youtube",
+        oauth_stage = "callback_received",
+        code_present = query.code.as_ref().is_some_and(|v| !v.is_empty())
+    );
     if let Some(error) = query.error.as_deref() {
         return oauth_redirect(
             &frontend,
@@ -1371,8 +1464,11 @@ async fn youtube_callback(
     response
 }
 
-async fn spotify_authorize(State(state): State<AppState>) -> Response {
-    match state.spotify.begin_authorization().await {
+async fn spotify_authorize(
+    State(state): State<AppState>,
+    Query(request): Query<OAuthStart>,
+) -> Response {
+    match state.spotify.begin_authorization_for(request.write).await {
         Ok(url) => oauth_start_redirect(&url, "spotify"),
         Err(_) => oauth_redirect(
             &state.spotify.frontend_url(),
@@ -1381,6 +1477,12 @@ async fn spotify_authorize(State(state): State<AppState>) -> Response {
             "config_required",
         ),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthStart {
+    #[serde(default)]
+    write: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1396,6 +1498,11 @@ async fn spotify_callback(
     Query(query): Query<SpotifyCallback>,
 ) -> Response {
     let frontend = app.spotify.frontend_url();
+    tracing::info!(
+        provider = "spotify",
+        oauth_stage = "callback_received",
+        code_present = query.code.as_ref().is_some_and(|v| !v.is_empty())
+    );
     if let Some(error) = query.error.as_deref() {
         return oauth_redirect(
             &frontend,
@@ -1473,6 +1580,7 @@ fn oauth_error_reason(error: &anyhow::Error) -> &'static str {
 }
 
 fn oauth_redirect(frontend: &str, provider: &str, status: &str, reason: &str) -> Response {
+    tracing::info!(provider, oauth_stage = "callback_redirect", status, reason);
     let fallback = "http://127.0.0.1:5173/";
     let mut url = reqwest::Url::parse(frontend)
         .or_else(|_| reqwest::Url::parse(fallback))

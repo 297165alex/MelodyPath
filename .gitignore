@@ -16,3 +16,6 @@ client_secret*.json
 /*.log
 /backend/*.log
 /frontend/*.log
+
+/frontend/test-results/
+/frontend/playwright-report/
