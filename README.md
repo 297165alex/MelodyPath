@@ -25,7 +25,7 @@ MelodyPath 严格区分真实文件、真实文本、真实账号数据、显式
 - Node.js 20.19+ 或 22.12+
 - npm
 
-真实 Last.fm 推荐需要后端环境中存在 `LASTFM_API_KEY`。没有该配置时，本地解析和音乐画像仍可运行，推荐区域会明确报告 Provider 未配置，不会回退 Demo。外部 LLM、Spotify 和 YouTube 均为可选配置，详见后文状态表。
+真实 Last.fm 推荐需要 MelodyPath 部署者在后端环境中配置 `LASTFM_API_KEY`。普通用户不需要申请 Last.fm Key；没有部署者配置时，本地解析和音乐画像仍可运行，推荐区域会明确报告 Provider 未配置，不会回退 Demo。外部 LLM、Spotify 和 YouTube 均为可选配置，详见后文状态表。
 
 ## 编译
 
@@ -45,13 +45,13 @@ npm run build
 
 ## 配置 Endpoint / Key
 
-根目录 `.env.example` 是环境变量名称和示例地址的参考模板，不包含真实凭据；不要将示例文件的存在视为配置已经生效。启动前应在后端进程环境中提供所需变量。Windows 可通过系统环境变量界面设置当前用户变量，重新打开终端后启动；`start-backend.ps1` 也会在运行时加载其列出的 User scope 变量。
+根目录 `.env.example` 是环境变量名称和示例地址的参考模板，不包含真实凭据；不要将示例文件的存在视为配置已经生效。以下 Developer credentials 由 MelodyPath 部署者统一配置，普通用户不需要申请 Spotify、Google 或 Last.fm Developer Key。普通用户连接 Spotify / YouTube 时，只需在平台官方 OAuth 页面审阅权限并授权。Windows 本地部署可通过系统环境变量界面设置当前用户变量，重新打开终端后启动；`start-backend.ps1` 也会在运行时加载其列出的 User scope 变量。
 
 - **基础功能无需 Key**：本地文件/文本解析与基础音乐画像可直接使用。
-- **真实推荐**：配置 `LASTFM_API_KEY`，用于 Discover 及 Agent 的真实推荐候选；无需终端用户登录 Last.fm。
+- **真实推荐**：部署者配置 `LASTFM_API_KEY`，用于 Discover 及 Agent 的真实推荐候选；普通用户无需 Last.fm Key，也无需登录 Last.fm。
 - **LLM Agent**：在启动后端的进程环境中提供 `OPENAI_API_KEY`，并在应用 Settings 中配置 OpenAI-compatible Endpoint 和 Model，使其与 Key 所属服务一致。`.env.example` 没有定义 Endpoint / Model 环境变量，不要自行猜测变量名；启动脚本的 User scope 加载列表也不包含 `OPENAI_API_KEY`，需确保启动终端已继承该变量。未配置 Key 时明确使用 `DETERMINISTIC_FALLBACK`，当前真实 LLM 验收仍未完成。
-- **Spotify 真实账号连接**：配置 `SPOTIFY_CLIENT_ID`、`SPOTIFY_CLIENT_SECRET`、`SPOTIFY_REDIRECT_URI`，可按需设置 `SPOTIFY_MARKET`；在 Spotify Developer Dashboard 登记完全一致的回调地址，并由用户在官方页面授权。
-- **YouTube / Google 真实账号连接**：配置 `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`、`GOOGLE_REDIRECT_URI`，在 Google Cloud 启用 YouTube Data API v3、登记完全一致的回调地址，并完成用户授权及额度准备。模板另列有 `YOUTUBE_API_KEY`，它不能替代账号 OAuth 授权。
+- **Spotify 真实账号连接**：部署者配置 `SPOTIFY_CLIENT_ID`、`SPOTIFY_CLIENT_SECRET`、`SPOTIFY_REDIRECT_URI`，可按需设置 `SPOTIFY_MARKET`，并在 Spotify Developer Dashboard 登记完全一致的回调地址；普通用户只在 Spotify 官方页面授权。
+- **YouTube / Google 真实账号连接**：部署者配置 `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`、`GOOGLE_REDIRECT_URI`，在 Google Cloud 启用 YouTube Data API v3、登记完全一致的回调地址并准备额度；普通用户只在 Google 官方页面授权。默认连接只申请 YouTube 只读权限；只有用户进入 Copy Playlist 写入流程时才单独申请写权限。模板另列的 `YOUTUBE_API_KEY` 不能替代账号 OAuth 授权。
 
 本地后端与 API 地址参考 `MELODYPATH_BIND`、`API_BASE_URL` 和 `VITE_API_PROXY_TARGET`；模板使用后端 `http://127.0.0.1:3000`。`FRONTEND_URL` 应与本次实际前端地址一致，一键启动脚本会将选定地址传给后端；手动启动时请以前端启动日志或 `start-melodypath.ps1` 最终输出的 Frontend 地址为准。部署时可参考模板中的 `PUBLIC_BASE_URL` 及 OAuth 回调说明。
 
@@ -108,7 +108,7 @@ Windows 推荐在安装前端依赖后，在项目根目录一次启动前后端
 
 ## 3. 上传歌单
 
-> 小插曲：我曾努力尝试实现“连接音乐账号或粘贴公开链接后一键读取歌单”的体验，但不同音乐平台的 OAuth、权限和接口限制比想象中复杂。目前 Spotify / YouTube 的官方连接框架已经完成，但真实账号授权仍需要平台配置。为了保证安全和稳定性，MelodyPath 当前优先支持标准歌单文件导入。
+> Spotify 与 YouTube / YouTube Music 已支持官方 OAuth 连接。授权后可选择账号内歌单，也可粘贴 Spotify 或 YouTube Playlist URL，通过官方 API 读取真实曲目并生成 Import Preview。Apple Music 与中国平台仍受各自官方能力和合作资格限制，可继续使用标准歌单文件或文本导入。
 >
 > 如果未来各平台提供更开放统一的官方接口，我也希望继续完善“一键连接 → 自动分析”的体验。
 
@@ -223,7 +223,7 @@ Artist - Track
 7. 进入 Version Radar，选择当前 Analysis，查看扫描流程及 OAuth 状态；真实 YouTube 搜索需要 Google OAuth 和 YouTube Data API 配置。
 8. 进入 Copy Playlist，查看 Spotify → YouTube 流程和当前 OAuth 状态。只有完成双端配置及授权、预览匹配并明确确认后，才能创建新的 YouTube 私有播放列表。
 
-演示无需用 Mock 冒充真实平台功能。Spotify / YouTube 真实账号连接仍依赖外部 OAuth 配置；当前双端真实复制尚未验收，配置或授权缺失时应展示实际阻塞状态。
+演示无需用 Mock 冒充真实平台功能。Spotify / YouTube 官方 OAuth、身份、账号歌单读取和 Playlist URL 曲目导入已完成真人验收；当前 Spotify → YouTube 的最终真实写入仍未验收，配置、授权或写权限缺失时应展示实际阻塞状态。
 
 # Features
 
@@ -351,16 +351,17 @@ Create a new private YouTube Playlist
 
 | 平台 | 读取能力 | 写入能力 | 当前状态 |
 |---|---|---|---|
-| Spotify | 官方 OAuth、账号身份、歌单与曲目分页读取代码已实现；仅用于用户主动发起的 Copy/写回 | 新建歌单与批量加入代码已实现 | **IMPLEMENTED BUT CONFIG REQUIRED**；尚未完成真实账号人工授权，不是 REAL VERIFIED |
-| YouTube / YouTube Music | Google OAuth、用户播放列表与 playlistItems 分页读取代码已实现；Version Radar 搜索也依赖该授权 | 新建私有播放列表与插入视频代码已实现 | **IMPLEMENTED BUT CONFIG REQUIRED**；仍需 Google Cloud、YouTube Data API、额度与人工授权 |
+| Spotify | 官方 OAuth、真实账号身份、用户歌单、曲目分页和已授权 Playlist URL 导入均已真人验收 | 新建私有歌单与批量加入代码已实现；最终真实写入尚待验收 | **REAL VERIFIED**（账号连接与读取） |
+| YouTube / YouTube Music | Google OAuth、真实账号身份、用户播放列表、playlistItems 和已授权 Playlist URL 导入均已真人验收；Version Radar 搜索也使用该授权 | 新建私有播放列表与插入视频代码已实现；最终真实写入尚待验收 | **REAL VERIFIED**（账号连接与读取） |
 | Apple Music | 当前没有 MusicKit 账号读取 Connector；只接受用户导出的文件或文本 | **UNSUPPORTED** | **IMPORT ONLY / CONNECTOR NOT IMPLEMENTED** |
 | NetEase / 网易云音乐 | 文件或粘贴文本；公开链接目前只做识别和可访问性检查，不能读取曲目 | **UNSUPPORTED** | **IMPORT ONLY** |
 | QQ Music / QQ音乐 | 文件或粘贴文本；没有已验证的通用个人歌单 OAuth | **UNSUPPORTED** | **IMPORT ONLY** |
 | Kugou / 酷狗音乐 | 文件或粘贴文本；官方个人歌单能力需要正式合作资格 | **UNSUPPORTED** | **IMPORT ONLY / PARTNERSHIP REQUIRED** |
+| Qishui / 汽水音乐 | 文件或粘贴文本；公开链接仅识别格式，没有已验证的官方曲目读取接口 | **UNSUPPORTED** | **IMPORT ONLY / URL RECOGNITION ONLY** |
 
-Last.fm 推荐 Provider 已使用五份真实歌单完成串行浏览器验收，状态为 **REAL VERIFIED**；它不需要终端用户登录 Last.fm。Spotify/YouTube 的 OAuth 流程虽然已实现，但“一键登录并真实复制”尚未完成账号持有人验收。必须由用户使用自己的开发者配置，在 Spotify 与 Google 官方页面授权，并最终得到新的真实 YouTube 播放列表链接后，才能标记为 REAL VERIFIED。
+Last.fm 推荐 Provider 已使用五份真实歌单完成串行浏览器验收，状态为 **REAL VERIFIED**；Developer Key 由 MelodyPath 部署者配置，普通用户无需 Key，也无需登录 Last.fm。Spotify 与 YouTube / YouTube Music 的官方 OAuth、真实身份、用户歌单读取和 Playlist URL 导入均已由账号持有人完成真人验收，状态为 **REAL VERIFIED**。普通用户无需自己的 Developer credentials，只需在官方 OAuth 页面授权。
 
-公开分享链接“可识别”或“页面可访问”不等于能够合法读取完整曲目。MelodyPath 不会把这两个状态冒充成平台连接成功。
+完成对应平台官方 OAuth 后，Spotify 与 YouTube Playlist URL 可通过官方 API 读取真实曲目并生成 Import Preview。Apple Music、网易云、QQ、酷狗和汽水仍只保留当前真实的 URL 识别、页面可访问性检查或不支持状态；“可识别”或“页面可访问”不等于能够合法读取完整曲目。
 
 # Architecture
 
@@ -439,15 +440,16 @@ MelodyPath 不会：
 
 # Testing
 
-最近一次最终审计记录（2026-09-06）：
+最近一次最终审计记录（2026-09-07）：
 
 | 检查 | 结果 |
 |---|---|
 | `cargo fmt --all --check` | PASS |
 | `cargo check --workspace` | PASS |
-| `cargo test --workspace` | **105/105 PASS** |
+| `cargo test --workspace` | **128 PASS / 0 FAIL / 1 ignored（显式联网探测）** |
 | `frontend/npm run lint` | PASS |
 | `frontend/npm run build` | PASS |
+| `frontend/npm run test:e2e` | **12/12 PASS** |
 
 Rust 测试覆盖导入格式与大歌单、Genre/艺人/版本规范化、Energy 缺失、Last.fm Provider 降级、三区推荐、候选池换批、源歌单排除、Compare、结构化 AgentDecision、非法工具、动态下一步、步数/费用限制、真实 Analysis 绑定、Copy 分页与匹配、歧义确认、失败隔离、取消/恢复，以及 OAuth 安全边界。
 
@@ -457,19 +459,21 @@ Rust 测试覆盖导入格式与大歌单、Genre/艺人/版本规范化、Energ
 - 真实文件 Personal Agent 与真实文本 Friend Bridge 已验证不会读取 Demo payload；
 - Happy_Mix 回归记录为 50/50 解析、`REAL_FILE`、13 个真实 Rust 工具调用完成，Agent 结果与绑定 Analysis 一致；
 - `/`、`/discover`、`/compare`、`/versions`、`/transfer`、`/agent` 已完成本地浏览器直达检查，终检没有新增关键控制台错误。
+- Spotify 官方 OAuth、真实账号身份、真实用户歌单以及真实 Playlist URL 的 16 首曲目 Import Preview 已通过真人验收；返回 `TRACK_IMPORT_AVAILABLE`。
+- YouTube 官方 Google OAuth、真实账号身份、真实用户歌单以及真实 YouTube Playlist URL 曲目导入已通过真人验收。
 
-以下不属于真实外部验收：外部 LLM 多步决策、Spotify/YouTube 真人 OAuth、真实 YouTube 版本搜索、真实跨平台播放列表创建。相关 Mock 只证明程序流程和安全闸门，不证明外部平台已接通。
+以下仍不属于真实外部验收：外部 LLM 多步决策、真实 YouTube 版本搜索、真实跨平台播放列表创建与写入。相关 Mock 只证明程序流程和安全闸门，不证明这些尚未验收的外部操作已完成。
 
 # Limitations and Future Work
 
 项目已经尝试并完成 Spotify 一键授权流程、YouTube OAuth 流程和统一多平台能力矩阵的代码实现，但当前仍有明确限制：
 
-- **OAuth 配置**：Spotify 与 YouTube 需要用户自己的开发者应用、Client 配置、完全一致的 Redirect URI 和账号持有人手动授权。
+- **OAuth 配置**：Spotify 与 YouTube 的开发者应用、Client 配置和完全一致的 Redirect URI 由 MelodyPath 部署者提供；普通用户只需在官方页面授权。默认 YouTube 连接只读，Copy Playlist 写入时才单独请求写权限。
 - **平台官方 API 权限**：开发模式资格、审核、YouTube 配额及中国平台合作权限不由仓库代码自动获得。
 - **真实 LLM 验收**：Controller、schema、预算和 fallback 已实现，但真实外部 LLM 决策环仍受配置阻塞。
 - **Version Radar**：页面和本地流程已实现，真实 YouTube 搜索与写入仍需 OAuth/API 配置。
 - **Copy 持久性**：run id、SSE、取消和恢复在单个后端进程内工作，尚不支持服务重启后的任务恢复。
-- **公开分享链接**：部分平台只支持域名/ID 识别和页面可访问性检查，尚不能合法稳定地导入曲目。
+- **公开分享链接**：Spotify / YouTube 在官方授权后可通过官方 API 导入真实曲目；Apple Music 与中国平台仍只支持现有的域名/ID 识别、页面可访问性检查或文件导入。
 - **公网部署**：同域部署参数和安全边界已准备，但尚无公开域名、HTTPS 证书、生产 Token Store 或公开验收地址。
 
 未来工作包括：
@@ -477,7 +481,7 @@ Rust 测试覆盖导入格式与大歌单、Genre/艺人/版本规范化、Energ
 - 使用官方 MusicKit / Apple Music API 实现 Apple Music 账号连接、Library Playlist 读取和歌单创建/写入；手工 CSV 只作为备用入口，而不是目标主要体验；
 - 在获得明确官方资格后增加更多 Connector，不使用 Cookie、私有接口或逆向方案；
 - 为生产环境接入托管 Secret/KMS、共享任务存储与队列；
-- 完成 Spotify 与 Google 真人 OAuth、真实 YouTube 私有播放列表链接和公网部署验收。
+- 完成 Spotify → YouTube 真实写入、真实 YouTube 私有播放列表链接和公网部署验收。
 
 # Course Requirement
 
