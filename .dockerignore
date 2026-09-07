@@ -1,0 +1,20 @@
+# Allowlist only source/build inputs; no credentials, databases, logs or test data.
+**
+!Cargo.toml
+!Cargo.lock
+!backend/
+!backend/Cargo.toml
+!backend/src/
+!backend/src/**
+!frontend/
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/index.html
+!frontend/tsconfig*.json
+!frontend/vite.config.ts
+!frontend/src/
+!frontend/src/**
+!frontend/public/
+!frontend/public/**
+!deploy/
+!deploy/entrypoint.sh

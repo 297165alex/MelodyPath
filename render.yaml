@@ -1,0 +1,44 @@
+# Manual Blueprint/service creation by the account owner. No automatic deploys.
+services:
+  - type: web
+    name: melodypath
+    runtime: docker
+    plan: starter
+    branch: feature/public-deployment
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeployTrigger: 'off'
+    numInstances: 1
+    disk:
+      name: melodypath-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: MELODYPATH_ENV
+        value: production
+      - key: PORT
+        value: '10000'
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: PUBLIC_DEMO_EXPIRES_AT
+        sync: false
+      - key: MELODYPATH_DATA_DIR
+        value: /var/data/melodypath
+      - key: MELODYPATH_STATIC_DIR
+        value: /app/static
+      - key: OAUTH_TOKEN_STORE
+        value: server_encrypted
+      - key: OAUTH_COOKIE_SECURE
+        value: 'true'
+      - key: OAUTH_TOKEN_ENCRYPTION_KEY
+        generateValue: true
+      - key: LASTFM_API_KEY
+        sync: false
+      - key: SPOTIFY_CLIENT_ID
+        sync: false
+      - key: SPOTIFY_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false

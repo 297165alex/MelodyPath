@@ -1,6 +1,13 @@
 import type { AgentSettings, AgentTask, AlternateVersionSearchResult, AppleMusicBootstrap, ComparisonReport, DemoPayload, ExportPreview, ExportResult, ImportPreview, ImportPreviewRequest, PlatformCapability, PlaylistLinkInspection, ProviderConfigurationStatus, SpotifyConnectionStatus, SpotifyImportResult, SpotifyPlaylistSummary, PersonalAnalysis, Track, TransferPreview, TransferResult, TransferRun, VersionType, WriterStatus, YouTubeConnectionStatus, YouTubeImportResult, YouTubePlaylistSummary } from './types'
 
+// One bootstrap request prevents parallel first-load calls from creating different
+// public browser workspaces. All production requests remain on the current origin.
+let sessionReady: Promise<void> | undefined
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  sessionReady ??= fetch('/api/session', { credentials: 'include' }).then(response => {
+    if (!response.ok) throw new Error('无法建立浏览器会话，请稍后刷新页面重试。')
+  })
+  await sessionReady
   const response = await fetch(url, { ...init, credentials: 'include' })
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: `请求失败：${response.status}` })) as { error?: string }

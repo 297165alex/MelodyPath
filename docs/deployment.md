@@ -1,5 +1,7 @@
 # MelodyPath 单域名部署准备
 
+> 历史记录（2026-09-05）。当前 Linux 加密存储、生产配置、访客隔离、测试和 Render 人工步骤以 [public_deployment.md](public_deployment.md) 为准；下文“生产 store 尚未实现”已被后续工程准备取代，但真实公网验收仍未完成。
+
 更新时间：2026-09-05
 
 ## 目标拓扑

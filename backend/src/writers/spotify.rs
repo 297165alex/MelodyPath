@@ -163,9 +163,7 @@ impl SpotifyPlaylistWriter {
         self.config
             .as_ref()
             .map(|config| config.frontend_url.clone())
-            .unwrap_or_else(|| {
-                std::env::var("FRONTEND_URL").unwrap_or_else(|_| "http://127.0.0.1:5173".into())
-            })
+            .unwrap_or_else(|| crate::deployment::frontend_url())
     }
 
     async fn persist_sessions(&self) -> Result<()> {
@@ -218,6 +216,7 @@ impl SpotifyPlaylistWriter {
             .as_ref()
             .map(|config| config.redirect_uri.clone())
             .or_else(|| nonempty_env("SPOTIFY_REDIRECT_URI"))
+            .or_else(|| public_endpoint("/api/spotify/callback"))
             .unwrap_or_else(|| DEFAULT_SPOTIFY_REDIRECT_URI.into());
         let redirect_valid = reqwest::Url::parse(&redirect_uri)
             .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some());

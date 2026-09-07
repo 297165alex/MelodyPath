@@ -1,6 +1,7 @@
 mod agent;
 mod alternate;
 mod demo;
+mod deployment;
 mod engine;
 mod genre;
 mod identity;
@@ -9,6 +10,7 @@ mod metadata;
 mod models;
 mod normalize;
 mod platforms;
+mod public_host;
 mod recommendation;
 mod secure_store;
 mod transfer;
@@ -123,6 +125,14 @@ impl ApiError {
     }
 
     fn internal(error: impl std::fmt::Display) -> Self {
+        if deployment::production() {
+            tracing::error!("request failed; details withheld in public deployment");
+            return Self {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                code: "internal_error",
+                message: "服务暂时无法完成请求，请稍后重试。".into(),
+            };
+        }
         tracing::error!(error = %error, "request failed");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -148,6 +158,8 @@ impl IntoResponse for ApiError {
 fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/api/session", get(health))
+        .route("/api/public-config", get(|| async { Json(serde_json::json!({"public_demo_expires_at": null})) }))
         .route("/api/demo", get(get_demo))
         .route("/api/analyze/manual", post(analyze_manual))
         .route("/api/imports/preview", post(preview_import))
@@ -219,9 +231,23 @@ async fn main() -> anyhow::Result<()> {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
+    let deployment = deployment::Deployment::from_env()?;
+    if deployment.production {
+        secure_store::server_key()?;
+        std::fs::create_dir_all(&deployment.data_dir)?;
+        for provider in ["spotify", "youtube"] {
+            secure_store::SecureJsonStore::for_oauth_provider(provider)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "CONFIG_REQUIRED: production encrypted token storage is unavailable"
+                    )
+                })?
+                .verify_existing()?;
+        }
+    }
     let database_path = std::env::var("MELODYPATH_DB_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("melody_path.db"));
+        .unwrap_or_else(|_| deployment.data_dir.join("melody_path.db"));
     let analyses = Arc::new(RwLock::new(HashMap::new()));
     let metadata = metadata::MetadataService::new();
     let state = AppState {
@@ -238,17 +264,51 @@ async fn main() -> anyhow::Result<()> {
         transfer_previews: Arc::new(RwLock::new(HashMap::new())),
         transfer_runs: Arc::new(StdRwLock::new(HashMap::new())),
     };
-    let address = std::env::var("MELODYPATH_BIND").unwrap_or_else(|_| "127.0.0.1:3000".into());
+    let address = &deployment.bind;
     let listener = TcpListener::bind(&address).await?;
     tracing::info!(%address, "MelodyPath API listening");
-    axum::serve(listener, app(state))
+    let router = if deployment.production {
+        public_host::router(state, deployment.clone())?
+    } else {
+        app(state)
+    };
+    axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
 }
 
 async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("SIGTERM handler registration failed");
+        tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+    }
+    #[cfg(not(unix))]
     let _ = tokio::signal::ctrl_c().await;
+}
+
+impl AppState {
+    /// Isolate state for a public browser without altering the local feature implementations.
+    async fn for_public_browser(&self, database: PathBuf) -> anyhow::Result<Self> {
+        let analyses = Arc::new(RwLock::new(HashMap::new()));
+        Ok(Self {
+            previews: Default::default(),
+            downloads: Default::default(),
+            spotify: self.spotify.clone(),
+            youtube: self.youtube.clone(),
+            apple: self.apple.clone(),
+            platforms: self.platforms.clone(),
+            metadata: self.metadata.clone(),
+            agent: agent::AgentService::new(database, analyses.clone()).await?,
+            analyses,
+            imports: Default::default(),
+            transfer_previews: Default::default(),
+            transfer_runs: Default::default(),
+        })
+    }
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -1585,9 +1645,9 @@ fn oauth_error_reason(error: &anyhow::Error) -> &'static str {
 
 fn oauth_redirect(frontend: &str, provider: &str, status: &str, reason: &str) -> Response {
     tracing::info!(provider, oauth_stage = "callback_redirect", status, reason);
-    let fallback = "http://127.0.0.1:5173/";
+    let fallback = deployment::frontend_url();
     let mut url = reqwest::Url::parse(frontend)
-        .or_else(|_| reqwest::Url::parse(fallback))
+        .or_else(|_| reqwest::Url::parse(&fallback))
         .expect("static fallback URL is valid");
     url.set_path("/");
     url.set_query(None);
