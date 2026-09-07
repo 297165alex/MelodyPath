@@ -69,7 +69,7 @@ impl PlatformService {
         let client = Client::builder()
             .timeout(Duration::from_secs(7))
             .redirect(Policy::custom(|attempt| {
-                if attempt.previous().len() >= 5 || !allowed_host(attempt.url()) {
+                if !public_redirect_allowed(attempt.url(), attempt.previous()) {
                     attempt.stop()
                 } else {
                     attempt.follow()
@@ -421,7 +421,7 @@ impl PlatformService {
         let mut link = link;
         let response = self
             .client
-            .get(parsed)
+            .get(link.normalized_url.as_deref().unwrap_or(parsed.as_str()))
             .header("Range", "bytes=0-65535")
             .send()
             .await;
@@ -571,11 +571,21 @@ fn query_value(url: &Url, names: &[&str]) -> Option<String> {
     })
 }
 
-fn numeric_path_id(url: &Url) -> Option<String> {
-    url.path_segments()?
-        .rev()
-        .find(|part| part.len() >= 3 && part.chars().all(|character| character.is_ascii_digit()))
-        .map(str::to_string)
+// These checks are for the anonymous accessibility client, never an OAuth client.
+fn public_redirect_allowed(target: &Url, previous: &[Url]) -> bool {
+    if previous.is_empty() || previous.len() >= 5 || target.scheme() != "https" {
+        return false;
+    }
+    let Ok(Some(source)) = recognize_link(previous[0].as_str()) else {
+        return false;
+    };
+    let Ok(Some(destination)) = recognize_link(target.as_str()) else {
+        return false;
+    };
+    source.platform == destination.platform
+        && matches!(source.platform, "netease" | "qq_music")
+        && (destination.playlist_id.is_some()
+            || (target.host_str() == Some("163cn.tv") && target.path().len() > 1))
 }
 
 fn recognize_link(raw: &str) -> Result<Option<RecognizedLink>> {
@@ -584,6 +594,15 @@ fn recognize_link(raw: &str) -> Result<Option<RecognizedLink>> {
         return Ok(None);
     }
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    if (host_matches(&host, "music.163.com")
+        || host_matches(&host, "163cn.tv")
+        || host_matches(&host, "y.qq.com"))
+        && (url.scheme() != "https"
+            || url.port_or_known_default() != Some(443)
+            || !matches!(host.as_str(), "music.163.com" | "163cn.tv" | "y.qq.com"))
+    {
+        return Ok(None);
+    }
     // NetEase's /#/playlist?id=... is a client-side route, not an HTTP query.
     let effective = url
         .fragment()
@@ -591,10 +610,14 @@ fn recognize_link(raw: &str) -> Result<Option<RecognizedLink>> {
         .and_then(|f| Url::parse(&format!("https://{host}{f}")).ok());
     let route = effective.as_ref().unwrap_or(&url);
     if host_matches(&host, "music.163.com") || host_matches(&host, "163cn.tv") {
-        let playlist_id =
-            query_value(route, &["id", "playlistId"]).or_else(|| numeric_path_id(route));
-        let playlist_id =
-            playlist_id.filter(|id| route.path().contains("playlist") && numeric_id(id));
+        let playlist_id = query_value(route, &["id", "playlistId"]).filter(|id| {
+            host == "music.163.com"
+                && matches!(
+                    route.path().trim_end_matches('/'),
+                    "/playlist" | "/m/playlist"
+                )
+                && numeric_id(id)
+        });
         return Ok(Some(RecognizedLink {
             platform: "netease",
             label: "网易云音乐",
@@ -605,11 +628,15 @@ fn recognize_link(raw: &str) -> Result<Option<RecognizedLink>> {
         }));
     }
     if host_matches(&host, "y.qq.com") {
-        let playlist_id =
-            query_value(&url, &["id", "dissid", "playlistId"]).or_else(|| numeric_path_id(&url));
-        let playlist_id = playlist_id.filter(|id| {
-            (url.path().contains("playlist") || url.path().contains("taoge")) && numeric_id(id)
-        });
+        let path = url.path().trim_end_matches('/');
+        let playlist_id = if path == "/n/m/detail/taoge/index.html" {
+            query_value(&url, &["id", "dissid", "playlistId"])
+        } else {
+            path.strip_prefix("/n/ryqq/playlist/")
+                .or_else(|| path.strip_prefix("/n/ryqq_v2/playlist/"))
+                .map(str::to_string)
+        }
+        .filter(|id| numeric_id(id));
         return Ok(Some(RecognizedLink {
             platform: "qq_music",
             label: "QQ音乐",
@@ -735,6 +762,78 @@ fn recognition_result(link: &RecognizedLink) -> PlaylistLinkInspection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn chinese_lookalike_paths_never_trigger_a_fetch() {
+        for raw in [
+            "https://music.163.com/not-playlist?id=123456",
+            "https://music.163.com/playlist/123456/song/789",
+            "https://y.qq.com/not-playlist/123456",
+            "https://y.qq.com/n/ryqq/playlist/123456/song/789",
+            "https://y.qq.com/n/ryqq/playlist/invalid?id=123456",
+        ] {
+            let result = PlatformService::new().inspect_link(raw).await.unwrap();
+            assert!(!result.playlist_id_valid, "{raw}");
+            assert_eq!(result.access_status, "not_checked");
+            assert!(result.preview_tracks.is_empty());
+        }
+    }
+
+    #[test]
+    fn chinese_accessibility_redirects_stay_on_exact_https_platform_hosts() {
+        let source = Url::parse("https://music.163.com/playlist?id=123456").unwrap();
+        for raw in [
+            "http://music.163.com/playlist?id=123456",
+            "https://unverified.music.163.com/playlist?id=123456",
+            "https://music.163.com:80/playlist?id=123456",
+            "https://music.163.com/other?id=123456",
+            "https://y.qq.com/n/ryqq/playlist/123456",
+            "https://music.163.com.evil.example/playlist?id=123456",
+            "https://user:pass@music.163.com/playlist?id=123456",
+            "https://localhost/playlist?id=123456",
+            "https://127.0.0.1/playlist?id=123456",
+            "https://169.254.169.254/",
+            "https://10.0.0.1/",
+            "https://172.16.0.1/",
+            "https://192.168.1.1/",
+            "https://[::1]/",
+            "file:///etc/passwd",
+            "ftp://music.163.com/playlist?id=123456",
+        ] {
+            assert!(
+                !public_redirect_allowed(&Url::parse(raw).unwrap(), std::slice::from_ref(&source)),
+                "{raw}"
+            );
+        }
+        assert!(public_redirect_allowed(
+            &source,
+            &[Url::parse("https://163cn.tv/synthetic").unwrap()]
+        ));
+        assert!(!public_redirect_allowed(&source, &vec![source.clone(); 5]));
+        assert!(!public_redirect_allowed(&source, &[]));
+        let qq = Url::parse("https://y.qq.com/n/ryqq_v2/playlist/123456").unwrap();
+        assert!(public_redirect_allowed(
+            &qq,
+            &[Url::parse("https://y.qq.com/n/ryqq/playlist/123456").unwrap()]
+        ));
+    }
+
+    #[test]
+    fn qq_current_official_route_and_netease_fragment_canonicalize() {
+        for (raw, expected) in [
+            (
+                "https://y.qq.com/n/ryqq_v2/playlist/123456?tracking=ignored",
+                "https://y.qq.com/n/ryqq/playlist/123456",
+            ),
+            (
+                "https://music.163.com/#/playlist?id=123456&tracking=ignored",
+                "https://music.163.com/playlist?id=123456",
+            ),
+        ] {
+            let result = recognize_link(raw).unwrap().unwrap();
+            assert_eq!(result.normalized_url.as_deref(), Some(expected));
+        }
+    }
 
     #[test]
     fn chinese_url_variants_remain_honest_about_ids() {
