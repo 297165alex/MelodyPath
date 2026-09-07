@@ -39,6 +39,7 @@ const DATE_HEADERS: &[&str] = &[
 ];
 const GENRE_HEADERS: &[&str] = &["genre", "genres", "流派", "曲风"];
 const DURATION_HEADERS: &[&str] = &["duration_ms", "duration ms", "duration (ms)", "时长毫秒"];
+const TIME_HEADERS: &[&str] = &["time", "时间", "时长"];
 const ENERGY_HEADERS: &[&str] = &["energy", "energy_score", "energy score", "能量"];
 
 #[derive(Debug, Clone)]
@@ -112,6 +113,9 @@ pub fn parse_import(mut request: ImportPreviewRequest) -> Result<StoredImport, S
         "tsv" => parse_delimited(&request.content, b'\t', &source)?,
         "json" => parse_json(&request.content, &source)?,
         "m3u" | "m3u8" => parse_m3u(&request.content, &source, &text_order)?,
+        "txt" | "text" if has_tabular_headers(&request.content) => {
+            parse_delimited(&request.content, b'\t', &source)?
+        }
         "txt" | "text" => parse_text(&request.content, &source, &text_order)?,
         _ => return Err(format!("不支持的导入格式：{format}")),
     };
@@ -167,6 +171,36 @@ struct ParseResult {
     saw_ambiguous_order: bool,
 }
 
+fn has_tabular_headers(content: &str) -> bool {
+    let headers: Vec<_> = content
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split('\t')
+        .map(normalize_header)
+        .collect();
+    find_header(&headers, TITLE_HEADERS).is_some()
+        && find_header(&headers, ARTIST_HEADERS).is_some()
+}
+
+fn clock_duration(raw: &str) -> Option<u32> {
+    let parts: Vec<_> = raw
+        .trim()
+        .split(':')
+        .map(str::parse::<u32>)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    let seconds = match parts.as_slice() {
+        [minutes, seconds] if *seconds < 60 => minutes.checked_mul(60)?.checked_add(*seconds)?,
+        [hours, minutes, seconds] if *minutes < 60 && *seconds < 60 => hours
+            .checked_mul(3600)?
+            .checked_add(minutes.checked_mul(60)?)?
+            .checked_add(*seconds)?,
+        _ => return None,
+    };
+    seconds.checked_mul(1000).filter(|value| *value > 0)
+}
+
 fn parse_delimited(content: &str, delimiter: u8, source: &str) -> Result<ParseResult, String> {
     let mut reader = csv::ReaderBuilder::new()
         .delimiter(delimiter)
@@ -186,6 +220,7 @@ fn parse_delimited(content: &str, delimiter: u8, source: &str) -> Result<ParseRe
     let date = find_header(&normalized, DATE_HEADERS);
     let genres = find_header(&normalized, GENRE_HEADERS);
     let duration = find_header(&normalized, DURATION_HEADERS);
+    let clock_time = find_header(&normalized, TIME_HEADERS);
     let energy = find_header(&normalized, ENERGY_HEADERS);
     let mut tracks = Vec::new();
     let mut invalid = 0;
@@ -209,8 +244,12 @@ fn parse_delimited(content: &str, delimiter: u8, source: &str) -> Result<ParseRe
                 let genre_values = genres
                     .map(|index| split_values(&field(&record, index)))
                     .unwrap_or_default();
-                let duration_value =
-                    duration.and_then(|index| field(&record, index).parse::<u32>().ok());
+                let duration_value = duration
+                    .and_then(|index| field(&record, index).parse::<u32>().ok())
+                    .filter(|value| *value > 0)
+                    .or_else(|| {
+                        clock_time.and_then(|index| clock_duration(&field(&record, index)))
+                    });
                 let energy_value = energy.and_then(|index| parse_energy(&field(&record, index)));
                 tracks.push(imported_track(
                     title_value,
@@ -564,6 +603,28 @@ fn non_empty_pair<'a>(left: &'a str, right: &'a str) -> Option<(&'a str, &'a str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_tabular_text_reuses_preview_with_real_missing_values() {
+        let mut req = request(
+            "txt",
+            "\u{feff}Name\tArtist\tAlbum\tTime\n中文 日本語 한국어\t艺人\tAlbum\t3:05\n重复\t艺人\t\t\n重复\t艺人\t\t\nMissing artist\t\t\t\n",
+        );
+        req.text_order = None;
+        let parsed = parse_import(req).unwrap();
+        assert_eq!(parsed.tracks.len(), 3);
+        assert_eq!(parsed.invalid_count, 1);
+        assert!(!parsed.requires_column_confirmation);
+        assert_eq!(parsed.tracks[0].duration_ms, Some(185000));
+        assert_eq!(parsed.tracks[1].duration_ms, None);
+        // File duplicates are retained for existing analysis duplicate statistics.
+        assert_eq!(parsed.tracks[1].title, parsed.tracks[2].title);
+        assert_eq!(parsed.preview().parsed_count, 3);
+        assert_eq!(clock_duration("bad"), None);
+        assert_eq!(clock_duration("3:99"), None);
+        assert_eq!(clock_duration("0:00"), None);
+        assert_eq!(clock_duration("1:02:03"), Some(3723000));
+    }
 
     fn request(format: &str, content: &str) -> ImportPreviewRequest {
         ImportPreviewRequest {

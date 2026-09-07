@@ -717,6 +717,8 @@ pub struct PlaylistLinkRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaylistLinkInspection {
+    #[serde(default)]
+    pub import_rows: Vec<PlaylistImportRow>,
     pub capability: PublicLinkCapability,
     pub url_valid: bool,
     pub playlist_id_valid: bool,
@@ -746,6 +748,21 @@ pub enum PublicLinkCapability {
     PublicMetadataAvailable,
     TrackImportAvailable,
     AuthRequired,
+    ConfigRequired,
+}
+
+/// Per-source-row report; skipped rows never become fabricated Track values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaylistImportRow {
+    pub source_platform: String,
+    pub playlist_id: String,
+    pub playlist_name: Option<String>,
+    pub track_title: Option<String>,
+    pub artist: Vec<String>,
+    pub duration_ms: Option<u32>,
+    pub source_url: Option<String>,
+    pub availability: String,
+    pub import_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -244,8 +244,9 @@ export interface ProviderConfigurationStatus {
   secrets_exposed_to_frontend: boolean
   message: string
 }
-export type PublicLinkCapability = 'UNSUPPORTED' | 'URL_RECOGNITION_ONLY' | 'ACCESSIBILITY_CHECK_ONLY' | 'PUBLIC_METADATA_AVAILABLE' | 'TRACK_IMPORT_AVAILABLE' | 'AUTH_REQUIRED'
+export type PublicLinkCapability = 'UNSUPPORTED' | 'URL_RECOGNITION_ONLY' | 'ACCESSIBILITY_CHECK_ONLY' | 'PUBLIC_METADATA_AVAILABLE' | 'TRACK_IMPORT_AVAILABLE' | 'AUTH_REQUIRED' | 'CONFIG_REQUIRED'
 export interface PlaylistLinkInspection {
+  import_rows?: { source_platform: string; playlist_id: string; playlist_name?: string; track_title?: string; artist: string[]; duration_ms?: number; source_url?: string; availability: string; import_status: string }[]
   capability: PublicLinkCapability
   url_valid: boolean
   playlist_id_valid: boolean

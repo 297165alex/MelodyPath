@@ -1190,6 +1190,62 @@ async fn inspect_playlist_link(
         .inspect_link(&request.url)
         .await
         .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    if result.platform.as_deref() == Some("apple_music") && result.playlist_id_valid {
+        if !state.apple.is_configured() {
+            result.capability = PublicLinkCapability::ConfigRequired;
+            result.message = "CONFIG_REQUIRED · WAITING_FOR_APPLE_DEVELOPER_CREDENTIALS；公开目录读取需要部署者配置 Developer Token。".into();
+            result.next_step =
+                "普通用户可继续使用文件或文本；部署者可查看 Apple 配置向导，无需现在付费。".into();
+            return Ok(Json(result));
+        }
+        match state.apple.import_playlist_link(&request.url).await {
+            Ok(imported) => {
+                result.playlist_name = imported.name;
+                result.track_count = Some(imported.tracks.len());
+                result.preview_tracks = imported.tracks;
+                result.import_rows = imported.rows;
+                result.capability = if result.preview_tracks.is_empty() {
+                    PublicLinkCapability::PublicMetadataAvailable
+                } else {
+                    PublicLinkCapability::TrackImportAvailable
+                };
+                result.access_status = "official_api_read".into();
+                result.structured_data_status = "official_api".into();
+                result.message = format!(
+                    "Apple 官方目录已完成分页：{} 个源条目，{} 首可导入。重复、缺少艺人和不可用元数据见逐项报告；未返回的曲目无法恢复。",
+                    result.import_rows.len(),
+                    result.preview_tracks.len()
+                );
+                result.next_step = "核对 Import Preview 后进入既有 Copy 确认流程；私人资料库未接入，未创建或写入任何歌单。".into();
+            }
+            Err(error) => {
+                let code = error.to_string();
+                result.capability = if matches!(
+                    code.as_str(),
+                    "APPLE_HTTP_401" | "APPLE_HTTP_403" | "WAITING_FOR_APPLE_DEVELOPER_CREDENTIALS"
+                ) {
+                    PublicLinkCapability::ConfigRequired
+                } else {
+                    PublicLinkCapability::UrlRecognitionOnly
+                };
+                result.access_status = "official_api_read_failed".into();
+                // Only locally generated error codes; never expose API body or credentials.
+                result.message = match code.as_str() {
+                    "APPLE_HTTP_401" | "APPLE_HTTP_403" => {
+                        "Apple 拒绝凭据或访问权限；请部署者检查 Token 有效期与资格。"
+                    }
+                    "APPLE_HTTP_404" | "APPLE_PLAYLIST_NOT_FOUND" => {
+                        "该地区目录未找到歌单；确认公开状态与链接地区。私人资料库未接入。"
+                    }
+                    "APPLE_HTTP_429" => "Apple API 限流；请稍后重试。",
+                    _ => "Apple 官方读取失败、响应异常或超出限制；未返回部分结果或替代歌曲。",
+                }
+                .into();
+                result.next_step = "检查官方配置和公开 URL 后重试，或使用文件/文本导入。".into();
+            }
+        }
+        return Ok(Json(result));
+    }
     if result.capability != PublicLinkCapability::AuthRequired {
         return Ok(Json(result));
     }
@@ -1233,6 +1289,20 @@ async fn inspect_playlist_link(
     };
     match imported {
         Ok((name, tracks)) => {
+            result.import_rows = tracks
+                .iter()
+                .map(|track| models::PlaylistImportRow {
+                    source_platform: track.platform.clone(),
+                    playlist_id: id.to_owned(),
+                    playlist_name: name.clone(),
+                    track_title: Some(track.title.clone()),
+                    artist: track.artists.clone(),
+                    duration_ms: track.duration_ms,
+                    source_url: track.platform_url.clone(),
+                    availability: "UNKNOWN".into(),
+                    import_status: "IMPORTED".into(),
+                })
+                .collect();
             result.capability = if tracks.is_empty() {
                 PublicLinkCapability::PublicMetadataAvailable
             } else {
@@ -1984,7 +2054,7 @@ mod tests {
             downloads: Arc::new(RwLock::new(HashMap::new())),
             spotify: SpotifyPlaylistWriter::new(),
             youtube: YoutubePlaylistWriter::new(),
-            apple: AppleMusicConnector::new(),
+            apple: AppleMusicConnector::default(),
             platforms: platforms::PlatformService::new(),
             agent: agent::AgentService::in_memory().await.unwrap(),
             metadata: metadata::MetadataService::new(),
@@ -2225,6 +2295,11 @@ mod tests {
         let router = test_app().await;
         for (url, expected_status, expected_capability) in [
             ("not a URL", StatusCode::BAD_REQUEST, ""),
+            (
+                "https://music.apple.com/us/playlist/pl.synthetic",
+                StatusCode::OK,
+                "CONFIG_REQUIRED",
+            ),
             (
                 "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
                 StatusCode::OK,

@@ -1,5 +1,7 @@
 # 平台能力与真实实现边界
 
+> 2026-09-07：以下为历史记录。`feature/more-platforms` 当前能力与官方核验以 [platform_capability_audit.md](platform_capability_audit.md) 为准；Apple 新增公开目录读取代码但未真人验收，不能将本页旧 IMPORT ONLY 表格当作最新矩阵。Spotify/YouTube 读取真人验收以 README 的 2026-09-07 记录为准，最终真实写入仍未通过。
+
 > MelodyPath是《程序设计训练（Rust语言）》AI Agent课程项目，同时将阶段性成果用于智理杯智能体大赛。
 
 以下是代码与本机验收状态，不用 Demo 代替平台验收。前端只消费后端 `PlatformCapability` 的布尔字段；没有 reader/writer 的平台不会出现可点击的 Connect 或目标按钮。

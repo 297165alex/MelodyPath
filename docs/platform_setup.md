@@ -19,7 +19,11 @@
 
 ## C. Apple Music MusicKit
 
-官方 MusicKit 确实支持 Music User Token、资料库读取和创建播放列表，但当前项目没有实现或验收 Apple Music Web 账号连接器。因此 UI 固定显示 `IMPORT_ONLY`，不得仅凭环境变量或 bootstrap 预留代码显示 Connect。未来若单独立项，需要 Apple Developer Program、MusicKit identifier、Media Services key、允许域名与真实用户授权；`.p8`、Developer Token 和 Music User Token 都不得提交或回显。
+2026-09-07 更新：本分支已实现 Apple Music **公开目录** URL 元数据与曲目分页，复用现有 Import Preview。尚未真人验收，私人资料库、MusicKit Web 账号授权与 Apple 写入均未接入。完整能力、官方依据与限制见 [平台审计](platform_capability_audit.md)。
+
+无需现在付款。已有资格的部署者可在仓库外使用 Apple Team ID、Key ID、MusicKit 私钥生成 ES256 Developer Token，只通过后端安全环境配置 `APPLE_MUSIC_DEVELOPER_TOKEN` 后重启。本项目不读取私钥文件、不自动签发 Token；预生成 Token 路径不再要求多余的 Team/Key 环境变量。缺失、格式无效或过期时为 `CONFIG_REQUIRED` / `WAITING_FOR_APPLE_DEVELOPER_CREDENTIALS`。配置就绪仅代表本地格式检查，Apple 可能继续拒绝签名、origin 或权限。
+
+普通用户无需开发者凭据，在首页粘贴带地区的 `music.apple.com/.../playlist/.../pl.ID` 公开链接即可尝试目录读取。核对完整歌曲、跳过条目和地区差异后才可记录真人验收。所有 Developer Token 留在后端；旧 bootstrap 接口不再下发 Token。私人资料库需要 Music User Token，不能通过公开目录 URL 绕过。
 
 ## D. 必须由用户亲自完成的验收
 

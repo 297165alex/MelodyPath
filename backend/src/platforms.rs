@@ -55,9 +55,13 @@ pub fn youtube_data_use() -> DataUseCapabilities {
 }
 
 pub fn apple_data_use() -> DataUseCapabilities {
-    DataUseCapabilities::unavailable(
-        "MusicKit 官方能力存在，但本项目尚未实现并真实验收账号连接；当前仅接受用户主动提供的导出文件。",
-    )
+    let mut data = DataUseCapabilities::unavailable(
+        "公开目录数据仅用于用户主动预览和传输；私人资料库与写入未接入，不进入画像或 LLM。",
+    );
+    data.can_read_playlist_items = true;
+    data.can_display_attributed_metadata = true;
+    data.can_transfer_playlist_metadata = true;
+    data
 }
 
 impl PlatformService {
@@ -269,7 +273,7 @@ impl PlatformService {
                 auth_supported: false,
                 playlist_read_supported: false,
                 playlist_write_supported: false,
-                public_link_import_supported: false,
+                public_link_import_supported: true,
                 file_import_supported: true,
                 compare_supported: true,
                 transfer_source_supported: true,
@@ -280,25 +284,25 @@ impl PlatformService {
                 playlist_read_for_compare: false,
                 playlist_read_for_recommendation: false,
                 alternate_version_search_supported: false,
-                status: "IMPORT_ONLY".into(),
-                reason: "MusicKit 真实账号连接器尚未实现；当前仅支持用户提供的导出数据。".into(),
+                status: if apple_configured { "OFFICIAL_API_NOT_REAL_VERIFIED" } else { "CONFIG_REQUIRED" }.into(),
+                reason: "公开目录 API 已实现，待真人验收；私人资料库账号连接未实现。".into(),
                 display_name: "Apple Music".into(),
                 region: "国际平台".into(),
-                capability_status: "import_only".into(),
-                status_label: "仅文件或文本导入".into(),
+                capability_status: if apple_configured { "catalog_ready" } else { "needs_configuration" }.into(),
+                status_label: if apple_configured { "OFFICIAL API · NOT REAL VERIFIED" } else { "OFFICIAL API · CONFIG REQUIRED" }.into(),
                 account_connection: "not_implemented".into(),
-                public_playlist_links: "URL_RECOGNITION_ONLY".into(),
-                playlist_read: "planned".into(),
-                playlist_write: "planned".into(),
+                public_playlist_links: if apple_configured { "TRACK_IMPORT_AVAILABLE" } else { "CONFIG_REQUIRED" }.into(),
+                playlist_read: "public_catalog_only".into(),
+                playlist_write: "not_implemented".into(),
                 search_links: true,
                 requires_review: true,
-                configured: false,
+                configured: apple_configured,
                 official_docs_url: Some("https://developer.apple.com/musickit/".into()),
                 action_kind: "import".into(),
                 description: if apple_configured {
-                    "检测到开发者配置，但账号连接器和真实验收尚未完成；当前仍只提供文件或文本导入。"
+                    "公开目录元数据与曲目分页已实现；请粘贴公开歌单 URL。私人资料库未接入。"
                 } else {
-                    "当前只提供文件或文本导入，不展示虚假的账号连接按钮。"
+                    "WAITING_FOR_APPLE_DEVELOPER_CREDENTIALS；部署者配置后可读取公开目录，普通用户可先用文件或文本。"
                 }
                 .into(),
                 policy_notice: None,
@@ -359,6 +363,19 @@ impl PlatformService {
         qishui.description = qishui.reason.clone();
         qishui.official_docs_url = Some("https://qishui.douyin.com/".into());
         capabilities.push(qishui);
+        for item in &mut capabilities {
+            if matches!(
+                item.platform.as_str(),
+                "netease" | "qq_music" | "kugou" | "qishui" | "kuwo"
+            ) {
+                item.status = "FILE_IMPORT_AVAILABLE".into();
+                item.status_label = format!("FILE / TEXT IMPORT · {}", item.public_playlist_links);
+                item.reason = "未核实可用于本项目的通用官方个人歌单 API；无账号连接。没有确认统一官方导出格式，可自行整理文件或文本。".into();
+            }
+            if matches!(item.platform.as_str(), "spotify" | "youtube_music") {
+                item.public_link_import_supported = true;
+            }
+        }
         capabilities
     }
 
@@ -366,6 +383,7 @@ impl PlatformService {
         let recognized = recognize_link(raw)?;
         let Some(link) = recognized else {
             return Ok(PlaylistLinkInspection {
+                import_rows: vec![],
                 capability: PublicLinkCapability::Unsupported,
                 url_valid: false,
                 playlist_id_valid: false,
@@ -455,6 +473,7 @@ impl PlatformService {
         };
 
         Ok(PlaylistLinkInspection {
+            import_rows: vec![],
             capability: PublicLinkCapability::AccessibilityCheckOnly,
             url_valid: true,
             playlist_id_valid: link.playlist_id.is_some(),
@@ -637,17 +656,7 @@ fn recognize_link(raw: &str) -> Result<Option<RecognizedLink>> {
         }));
     }
     if host == "music.apple.com" {
-        let playlist_id = url
-            .path_segments()
-            .and_then(|mut parts| parts.find(|p| *p == "playlist").and_then(|_| parts.last()))
-            .filter(|id| {
-                id.starts_with("pl.")
-                    && id.len() > 3
-                    && id[3..]
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            })
-            .map(str::to_owned);
+        let playlist_id = crate::writers::apple::catalog_link(raw).map(|(_, id)| id);
         return Ok(Some(RecognizedLink {
             platform: "apple_music",
             label: "Apple Music",
@@ -679,6 +688,7 @@ fn numeric_id(id: &str) -> bool {
 fn recognition_result(link: &RecognizedLink) -> PlaylistLinkInspection {
     let auth = matches!(link.platform, "spotify" | "youtube_music") && link.playlist_id.is_some();
     PlaylistLinkInspection {
+        import_rows: vec![],
         capability: if auth {
             PublicLinkCapability::AuthRequired
         } else {
@@ -725,6 +735,71 @@ fn recognition_result(link: &RecognizedLink) -> PlaylistLinkInspection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chinese_url_variants_remain_honest_about_ids() {
+        for (url, platform, id) in [
+            (
+                "https://music.163.com/#/playlist?id=123456",
+                "netease",
+                Some("123456"),
+            ),
+            (
+                "https://music.163.com/m/playlist?id=123456",
+                "netease",
+                Some("123456"),
+            ),
+            ("https://music.163.com/playlist?id=bad", "netease", None),
+            ("https://163cn.tv/synthetic", "netease", None),
+            (
+                "https://y.qq.com/n/ryqq/playlist/123456",
+                "qq_music",
+                Some("123456"),
+            ),
+            (
+                "https://y.qq.com/n/m/detail/taoge/index.html?id=123456",
+                "qq_music",
+                Some("123456"),
+            ),
+            ("https://y.qq.com/n/ryqq/playlist/bad", "qq_music", None),
+            ("https://www.kugou.com/share/test", "kugou", None),
+            ("https://m.kugou.com/playlist/123456", "kugou", None),
+            ("https://qishui.douyin.com/share/test", "qishui", None),
+            ("https://qishui.douyin.com/playlist/123456", "qishui", None),
+        ] {
+            let link = recognize_link(url).unwrap().unwrap();
+            assert_eq!(link.platform, platform);
+            assert_eq!(link.playlist_id.as_deref(), id);
+        }
+    }
+
+    #[test]
+    fn capability_matrix_does_not_confuse_catalog_and_account_access() {
+        for configured in [false, true] {
+            let items = PlatformService::new().capabilities(configured, configured, configured);
+            let apple = items.iter().find(|p| p.platform == "apple_music").unwrap();
+            assert!(apple.public_link_import_supported);
+            assert!(
+                !apple.auth_supported
+                    && !apple.playlist_write_supported
+                    && !apple.playlist_read_supported
+            );
+            assert_eq!(
+                apple.public_playlist_links,
+                if configured {
+                    "TRACK_IMPORT_AVAILABLE"
+                } else {
+                    "CONFIG_REQUIRED"
+                }
+            );
+            for platform in ["netease", "qq_music", "kugou", "qishui"] {
+                let item = items.iter().find(|p| p.platform == platform).unwrap();
+                assert_eq!(item.status, "FILE_IMPORT_AVAILABLE");
+                assert!(!item.auth_supported && !item.public_link_import_supported);
+                assert!(item.file_import_supported);
+            }
+        }
+    }
 
     #[test]
     fn recognizes_netease_and_qq_without_network_access() {
@@ -784,10 +859,7 @@ mod tests {
             assert!(!item.transfer_destination_supported);
             assert!(!item.playlist_read_for_copy);
             assert!(!item.copy_destination_supported);
-            assert!(matches!(
-                item.status.as_str(),
-                "IMPORT_ONLY" | "PARTNERSHIP_REQUIRED"
-            ));
+            assert_eq!(item.status, "FILE_IMPORT_AVAILABLE");
         }
         let spotify = capabilities
             .iter()
@@ -808,7 +880,7 @@ mod tests {
             .iter()
             .find(|item| item.platform == "apple_music")
             .unwrap();
-        assert_eq!(apple.status, "IMPORT_ONLY");
+        assert_eq!(apple.status, "CONFIG_REQUIRED");
         assert!(!apple.auth_supported && !apple.configured);
     }
     #[tokio::test]
