@@ -1,6 +1,6 @@
 # Platform capability audit
 
-审计日期：2026-09-07。范围：`feature/more-platforms` 上的平台读取扩展；不扩大 Spotify/Google scope，不改变已有写入确认闸门。本报告取代旧文档中 Apple “只有 bootstrap” 的当前实现描述；旧的真人验收记录保留其原始日期与范围。
+官方能力审计日期：2026-09-07；最终产品收尾：2026-09-08（未开展新 API 研究）。范围：`feature/more-platforms` 上的平台读取扩展；不扩大 Spotify/Google scope，不改变已有写入确认闸门。本报告取代旧文档中 Apple “只有 bootstrap” 的当前实现描述；旧的真人验收记录保留其原始日期与范围。
 
 ## 官方能力与实现矩阵
 
@@ -10,7 +10,7 @@
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | Spotify | Web API | Authorization Code | 已实现，需授权与访问权限 | 已实现分页 | 已实现 | OAuth / URL / 自备文件文本 | 部署者 Spotify 应用配置 | 既有平台开发模式及应用资格限制 | 账号读取、URL 曲目导入；既有真人读取验收通过 | 不保证任意公开歌单可读；最终写入仍未真人验收 | REAL VERIFIED（既有读取验收）；写入未验收 |
 | YouTube / YouTube Music | YouTube Data API v3 | Google OAuth | 已实现 | 已实现分页 | 已实现 | OAuth / URL / 自备文件文本 | 部署者 Google OAuth 配置、启用 API | 配额与 OAuth 发布/审核要求 | 账号读取、URL 曲目导入；既有真人读取验收通过 | YouTube Music 通过 YouTube API；最终写入仍未真人验收 | REAL VERIFIED（既有读取验收）；写入未验收 |
-| Apple Music | Apple Music API / MusicKit [A1–A5] | MusicKit 用户授权，非本项目 OAuth 连接器 | Catalog API 可读取 | Catalog tracks 关系分页 | 官方可用，需 Music User Token；本轮未实现 | 本轮目录 URL；Mac 官方文本导出/复制列；自备 CSV/TSV/JSON/TXT | 部署者后端 `APPLE_MUSIC_DEVELOPER_TOKEN`；生成时需 Team ID、Key ID、MusicKit 私钥 | Developer Program 通常 USD 99/年；符合条件机构可能申请减免 [A6] | 公开 URL → 官方分页代码 → 既有 Import Preview / Track / TransferTrack；CONFIG_REQUIRED，未真人验收 | 无本轮真实凭据验收；不能将目录读取当作私人资料库读取 | NOT REAL VERIFIED / WAITING_FOR_APPLE_DEVELOPER_CREDENTIALS |
+| Apple Music | Apple Music API / MusicKit [A1–A5] | MusicKit 用户授权，非本项目 OAuth 连接器 | Catalog API 可读取 | Catalog tracks 关系分页 | 官方可用，需 Music User Token；本轮未实现 | 本轮目录 URL；Mac 官方文本导出/复制列；自备 CSV/TSV/JSON/TXT | 部署者后端 `APPLE_MUSIC_DEVELOPER_TOKEN`；生成时需 Team ID、Key ID、MusicKit 私钥 | Developer Program 通常 USD 99/年；符合条件机构可能申请减免 [A6] | 公开 URL → 官方分页代码 → 既有 Import Preview / Track / TransferTrack；CONFIG_REQUIRED，未真人验收 | 无本轮真实凭据验收；不能将目录读取当作私人资料库读取 | OFFICIAL API IMPLEMENTED / CONFIG REQUIRED / NOT REAL VERIFIED（课程接受的最终状态） |
 | 网易云音乐 | 官方开发者入口存在，页面本次读取失败 [C1] | 未核实通用个人歌单授权 | 未核实 | 未核实 | 未核实 | 自备文件、手工文本；未确认统一官方导出格式 | 未获可验证的适用凭据规范 | 申请资格/成本未核实；不能臆测个人可免费接入 | FILE_IMPORT_AVAILABLE + ACCESSIBILITY_CHECK_ONLY | 不依赖逆向库或站内接口；访问检查不提取曲目 | 未做真人 API 验收；不声称已接入 |
 | QQ音乐 | 官方 IoT/H5 音乐服务接口 [C2] | 所见文档属于腾讯连连场景；非通用个人歌单 OAuth 证明 | 受限 SDK 中有歌单能力 | 受限 SDK 中有音乐能力；本项目未获适用授权 | 不可据此认定个人 Web 可用 | 自备文件、手工文本；未确认统一官方导出格式 | 合作场景凭据，不能用 QQ 登录替代 QQ音乐歌单权限 | IoT/合作用途限制，具体合同/成本未核实 | FILE_IMPORT_AVAILABLE + ACCESSIBILITY_CHECK_ONLY | 未验证可合法用于本课程 Web 应用的个人歌单 API | 未做真人 API 验收；不声称已接入 |
 | 酷狗音乐 | 官方曲库开放播放 SDK [C3] | 未核实通用个人歌单 OAuth | 未核实适用接口 | 未核实适用接口 | 未核实 | 自备文件、手工文本；未确认统一官方导出格式 | SDK/商务接入资格待官方确认 | 合作资格/合同成本未核实 | FILE_IMPORT_AVAILABLE + URL_RECOGNITION_ONLY | 曲库播放 SDK 不等于个人歌单读取；分享 token/ID 格式未核实，不猜测解码 | 未做真人 API 验收；不声称已接入 |
@@ -51,12 +51,18 @@ Apple Developer Token 仅运行时在后端读取、只发给固定 `api.music.a
 
 Spotify/Google OAuth 文件、scope、state 与源歌单写入边界不改动；平台 API 数据不进入画像/推荐/LLM。未检查真实密钥、Cookie、数据库、私人歌单或运行日志。
 
-人工步骤：如已有 Apple 资格，由部署者在仓库外生成 Token 并通过安全后端环境配置，重启；普通用户粘贴本人愿意验证的**公开** Apple 歌单 URL，核对真实名称、完整条数、中文/日文/韩文、重复和缺失条目。地区差异、公开用户歌单与大型分页仍须真实验证。不要把凭据粘贴到聊天或 UI。本轮没有真人 Apple API 结果，状态保持 WAITING_FOR_APPLE_DEVELOPER_CREDENTIALS。没有凭据也可完成全部本地测试和文件流程。
+人工步骤：如已有 Apple 资格，由部署者在仓库外生成 Token 并通过安全后端环境配置，重启；普通用户粘贴本人愿意验证的**公开** Apple 歌单 URL，核对真实名称、完整条数、中文/日文/韩文、重复和缺失条目。地区差异、公开用户歌单与大型分页仍须真实验证。不要把凭据粘贴到聊天或 UI。本课程接受 OFFICIAL API IMPLEMENTED / CONFIG REQUIRED / NOT REAL VERIFIED，私人资料库未支持；不购买开发者会员、不等待凭据。本节人工步骤仅为未来自行部署的可选参考，不是课程收尾条件。没有凭据也可完成全部本地测试和文件流程。
 
-当前执行进程通过 `Test-Path Env:APPLE_MUSIC_DEVELOPER_TOKEN` 仅检查变量存在性，结果 false；未读取凭据值。部署者配置安全环境后，新开终端在项目根目录运行 `cargo run -p melody-path-api`；另一个终端运行 `npm --prefix frontend run dev`，打开其输出的前端地址。无需在 MelodyPath UI 输入任何凭据。
+2026-09-07 审计时执行进程通过 `Test-Path Env:APPLE_MUSIC_DEVELOPER_TOKEN` 仅检查变量存在性，结果 false；未读取凭据值。部署者配置安全环境后，新开终端在项目根目录运行 `cargo run -p melody-path-api`；另一个终端运行 `npm --prefix frontend run dev`，打开其输出的前端地址。无需在 MelodyPath UI 输入任何凭据。
 
 测试 URL 应由用户在 Apple Music 官方页面复制，例如结构 `https://music.apple.com/cn/playlist/<名称>/pl.<真实ID>`；这只是格式说明，不是已验收的实际歌单。选本人愿意公开测试、包含少量明确曲目的歌单，随后再核对多页歌单。成功显示真实 playlist 名称、曲目、总数、逐项状态及 `TRACK_IMPORT_AVAILABLE`；没有点击确认前不创建目标列表。
 
-## README 建议（本轮不修改 README）
+## 课程最终 UI 与文档状态（2026-09-08）
 
-全部检查通过后，建议仅将 Apple 当前能力改为“公开目录 URL 导入代码已实现，OFFICIAL API · CONFIG REQUIRED，尚未真人验收；私人资料库未接入”，补充官方文本导出与中国平台无已核实通用 API 的说明。不得新增 Apple/中国平台 REAL VERIFIED 标签。
+能力矩阵冻结，不新增平台、API、OAuth 或 Apple 功能。README 已同步。Spotify/YouTube 官方读取与 Last.fm 推荐保留既有 REAL VERIFIED 记录；Apple 固定接受 OFFICIAL API IMPLEMENTED / CONFIG REQUIRED / NOT REAL VERIFIED，私人资料库未支持，不以付费或真人配置阻塞课程完成。
+
+七张卡片保留原有结构、badge 样式与响应式布局，只统一中文文案：已真人验收、尚未真人验收、需部署者配置、连接账号后可用、支持文件 / 文本导入、可识别公开链接、可识别链接并检查公开可访问性。内部枚举仍用于逻辑判断，不作为主要用户文案；Apple 不显示等待凭据代码或普通用户配置按钮。
+
+公网 Demo：普通用户无需开发者凭据。自行部署：真实 Spotify / YouTube / Apple Music / Last.fm 能力由部署者配置。统一提示“MelodyPath 不要求用户提供账号密码或 Cookie。”中国平台仅文件/文本和已实现的 URL 能力，不声称完整曲目 API。
+
+本轮只修改前端文案与对应回归断言、README、此审计及 PLATFORM_HANDOFF.md；后端与 CSS 不变。最终测试结果见 PLATFORM_HANDOFF.md。全部检查通过即可由用户手动决定合并，不等待 Apple Credentials。

@@ -108,7 +108,7 @@ Windows 推荐在安装前端依赖后，在项目根目录一次启动前后端
 
 ## 3. 上传歌单
 
-> Spotify 与 YouTube / YouTube Music 已支持官方 OAuth 连接。授权后可选择账号内歌单，也可粘贴 Spotify 或 YouTube Playlist URL，通过官方 API 读取真实曲目并生成 Import Preview。Apple Music 与中国平台仍受各自官方能力和合作资格限制，可继续使用标准歌单文件或文本导入。
+> Spotify 与 YouTube / YouTube Music 已支持官方 OAuth 连接。授权后可选择账号内歌单，也可粘贴 Spotify 或 YouTube Playlist URL，通过官方 API 读取真实曲目并生成 Import Preview。Apple Music 公开目录 API 代码已实现，当前需部署者配置且尚未真人验收；中国平台未核实到本项目可使用的通用官方歌单读取接口，均可使用文件或文本导入。
 >
 > 如果未来各平台提供更开放统一的官方接口，我也希望继续完善“一键连接 → 自动分析”的体验。
 
@@ -351,17 +351,20 @@ Create a new private YouTube Playlist
 
 | 平台 | 读取能力 | 写入能力 | 当前状态 |
 |---|---|---|---|
-| Spotify | 官方 OAuth、真实账号身份、用户歌单、曲目分页和已授权 Playlist URL 导入均已真人验收 | 新建私有歌单与批量加入代码已实现；最终真实写入尚待验收 | **REAL VERIFIED**（账号连接与读取） |
-| YouTube / YouTube Music | Google OAuth、真实账号身份、用户播放列表、playlistItems 和已授权 Playlist URL 导入均已真人验收；Version Radar 搜索也使用该授权 | 新建私有播放列表与插入视频代码已实现；最终真实写入尚待验收 | **REAL VERIFIED**（账号连接与读取） |
-| Apple Music | 当前没有 MusicKit 账号读取 Connector；只接受用户导出的文件或文本 | **UNSUPPORTED** | **IMPORT ONLY / CONNECTOR NOT IMPLEMENTED** |
-| NetEase / 网易云音乐 | 文件或粘贴文本；公开链接目前只做识别和可访问性检查，不能读取曲目 | **UNSUPPORTED** | **IMPORT ONLY** |
-| QQ Music / QQ音乐 | 文件或粘贴文本；没有已验证的通用个人歌单 OAuth | **UNSUPPORTED** | **IMPORT ONLY** |
-| Kugou / 酷狗音乐 | 文件或粘贴文本；官方个人歌单能力需要正式合作资格 | **UNSUPPORTED** | **IMPORT ONLY / PARTNERSHIP REQUIRED** |
-| Qishui / 汽水音乐 | 文件或粘贴文本；公开链接仅识别格式，没有已验证的官方曲目读取接口 | **UNSUPPORTED** | **IMPORT ONLY / URL RECOGNITION ONLY** |
+| Spotify | 官方 OAuth、账号歌单读取、公开歌单 URL 导入、文件/文本导入 | 代码已实现，最终真实写入未验收 | **Official API · REAL VERIFIED**（读取） |
+| YouTube / YouTube Music | 官方 OAuth、账号歌单读取、公开歌单 URL 导入、文件/文本导入 | 代码已实现，最终真实写入未验收 | **Official API · REAL VERIFIED**（读取） |
+| Apple Music | 公开目录歌单读取代码已实现；文件/文本导入可用；私人资料库未支持 | UNSUPPORTED | **Official API implemented · CONFIG REQUIRED · NOT REAL VERIFIED · Private library unsupported** |
+| NetEase / 网易云音乐 | 文件/文本导入、URL 识别、公开可访问性检查；不能读取完整歌单 API 曲目 | UNSUPPORTED | **FILE/TEXT IMPORT · URL recognition · accessibility check** |
+| QQ Music / QQ音乐 | 文件/文本导入、URL 识别、公开可访问性检查；不能读取完整歌单 API 曲目 | UNSUPPORTED | **FILE/TEXT IMPORT · URL recognition · accessibility check** |
+| Kugou / 酷狗音乐 | 文件/文本导入、URL 识别 | UNSUPPORTED | **FILE/TEXT IMPORT · URL recognition** |
+| Qishui / 汽水音乐 | 文件/文本导入、URL 识别 | UNSUPPORTED | **FILE/TEXT IMPORT · URL recognition** |
 
+课程最终接受 Apple 上述状态，不购买 Apple Developer Program，不将凭据或真人验收作为本分支收尾条件。UI 显示“官方 API · 需部署者配置”，说明公开目录代码已实现、尚未真人验收、私人资料库未支持；没有配置时仍可导入文件或文本。平台卡片使用统一中文状态，不将内部枚举作为主要用户文案。
+
+MelodyPath 不要求用户提供账号密码或 Cookie。公网 Demo 的普通用户无需 Developer Credentials；自行部署时，若需 Spotify / YouTube / Apple Music / Last.fm 的真实平台能力，由部署者在后端配置对应凭据。文件/文本导入无需开发者凭据，也不代表各平台都有统一官方导出格式。
 Last.fm 推荐 Provider 已使用五份真实歌单完成串行浏览器验收，状态为 **REAL VERIFIED**；Developer Key 由 MelodyPath 部署者配置，普通用户无需 Key，也无需登录 Last.fm。Spotify 与 YouTube / YouTube Music 的官方 OAuth、真实身份、用户歌单读取和 Playlist URL 导入均已由账号持有人完成真人验收，状态为 **REAL VERIFIED**。普通用户无需自己的 Developer credentials，只需在官方 OAuth 页面授权。
 
-完成对应平台官方 OAuth 后，Spotify 与 YouTube Playlist URL 可通过官方 API 读取真实曲目并生成 Import Preview。Apple Music、网易云、QQ、酷狗和汽水仍只保留当前真实的 URL 识别、页面可访问性检查或不支持状态；“可识别”或“页面可访问”不等于能够合法读取完整曲目。
+完成对应平台官方 OAuth 后，Spotify 与 YouTube Playlist URL 可通过官方 API 读取真实曲目并生成 Import Preview。Apple Music 的公开目录 URL 读取代码已实现，但课程环境需配置且尚未真人验收；网易云、QQ、酷狗和汽水保留 URL 识别、相应可访问性检查与文件/文本导入；“可识别”或“页面可访问”不等于能够合法读取完整曲目。
 
 # Architecture
 
@@ -440,16 +443,17 @@ MelodyPath 不会：
 
 # Testing
 
-最近一次最终审计记录（2026-09-07）：
+最近一次最终审计记录（2026-09-08）：
 
 | 检查 | 结果 |
 |---|---|
 | `cargo fmt --all --check` | PASS |
 | `cargo check --workspace` | PASS |
-| `cargo test --workspace` | **128 PASS / 0 FAIL / 1 ignored（显式联网探测）** |
-| `frontend/npm run lint` | PASS |
-| `frontend/npm run build` | PASS |
-| `frontend/npm run test:e2e` | **12/12 PASS** |
+| `cargo test --workspace` | **136 PASS / 0 FAIL / 1 ignored（显式联网探测）** |
+| `cargo build --release --locked` | PASS |
+| `npm --prefix frontend run lint` | PASS |
+| `npm --prefix frontend run build` | PASS |
+| `npm --prefix frontend run test:e2e` | **16/16 PASS** |
 
 Rust 测试覆盖导入格式与大歌单、Genre/艺人/版本规范化、Energy 缺失、Last.fm Provider 降级、三区推荐、候选池换批、源歌单排除、Compare、结构化 AgentDecision、非法工具、动态下一步、步数/费用限制、真实 Analysis 绑定、Copy 分页与匹配、歧义确认、失败隔离、取消/恢复，以及 OAuth 安全边界。
 
@@ -473,12 +477,12 @@ Rust 测试覆盖导入格式与大歌单、Genre/艺人/版本规范化、Energ
 - **真实 LLM 验收**：Controller、schema、预算和 fallback 已实现，但真实外部 LLM 决策环仍受配置阻塞。
 - **Version Radar**：页面和本地流程已实现，真实 YouTube 搜索与写入仍需 OAuth/API 配置。
 - **Copy 持久性**：run id、SSE、取消和恢复在单个后端进程内工作，尚不支持服务重启后的任务恢复。
-- **公开分享链接**：Spotify / YouTube 在官方授权后可通过官方 API 导入真实曲目；Apple Music 与中国平台仍只支持现有的域名/ID 识别、页面可访问性检查或文件导入。
+- **公开分享链接**：Spotify / YouTube 在官方授权后可通过官方 API 导入真实曲目；Apple Music 公开目录读取代码已实现，但当前需配置、尚未真人验收且私人资料库未支持；中国平台仅支持现有 URL 识别、相应可访问性检查和文件/文本导入。
 - **公网部署**：同域部署参数和安全边界已准备，但尚无公开域名、HTTPS 证书、生产 Token Store 或公开验收地址。
 
 未来工作包括：
 
-- 使用官方 MusicKit / Apple Music API 实现 Apple Music 账号连接、Library Playlist 读取和歌单创建/写入；手工 CSV 只作为备用入口，而不是目标主要体验；
+- 本课程 Apple Music 能力已冻结为公开目录 API 已实现、需配置、未真人验收；不继续扩展账号连接、私人资料库或写入；
 - 在获得明确官方资格后增加更多 Connector，不使用 Cookie、私有接口或逆向方案；
 - 为生产环境接入托管 Secret/KMS、共享任务存储与队列；
 - 完成 Spotify → YouTube 真实写入、真实 YouTube 私有播放列表链接和公网部署验收。
