@@ -131,19 +131,57 @@ pub struct YoutubePlaylistWriter {
     session_store: Option<SecureJsonStore>,
 }
 
+fn youtube_http_client(proxy: Option<&str>) -> Result<Client> {
+    let mut builder = Client::builder().timeout(Duration::from_secs(12));
+    if let Some(proxy) = proxy {
+        builder = builder.proxy(reqwest::Proxy::https(proxy)?);
+    }
+    Ok(builder.build()?)
+}
+
+#[derive(Debug)]
+pub struct YoutubeOAuthFailure(pub &'static str);
+impl std::fmt::Display for YoutubeOAuthFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for YoutubeOAuthFailure {}
+
+fn youtube_oauth_failure(reason: &'static str) -> anyhow::Error {
+    tracing::warn!(
+        provider = "youtube",
+        oauth_stage = "callback_failed",
+        reason
+    );
+    YoutubeOAuthFailure(reason).into()
+}
+
 impl YoutubePlaylistWriter {
     pub fn new() -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(12))
-            .build()
-            .unwrap_or_default();
+        let (client, proxy_valid) =
+            match youtube_http_client(nonempty_env("YOUTUBE_HTTPS_PROXY").as_deref()) {
+                Ok(client) => (client, true),
+                Err(_) => {
+                    tracing::error!(
+                        provider = "youtube",
+                        oauth_stage = "client_configuration",
+                        reason = "invalid_proxy_configuration"
+                    );
+                    (Client::new(), false)
+                }
+            };
         let session_store = SecureJsonStore::for_oauth_provider("youtube");
         let sessions = session_store
             .as_ref()
             .and_then(|store| store.load().ok())
             .unwrap_or_default();
         Self {
-            config: YoutubeConfig::from_env(),
+            config: if proxy_valid {
+                YoutubeConfig::from_env()
+            } else {
+                None
+            },
             client,
             pending_states: Arc::new(RwLock::new(HashMap::new())),
             sessions: Arc::new(RwLock::new(sessions)),
@@ -360,20 +398,36 @@ impl YoutubePlaylistWriter {
             ])
             .send()
             .await
-            .context("无法连接 Google token endpoint")?
+            .map_err(|error| {
+                youtube_oauth_failure(if error.is_timeout() {
+                    "youtube_token_timeout"
+                } else {
+                    "youtube_token_network"
+                })
+            })?
             .error_for_status()
-            .context("Google 拒绝了授权码")?
+            .map_err(|_| youtube_oauth_failure("youtube_token_rejected"))?
             .json()
-            .await?;
+            .await
+            .map_err(|_| youtube_oauth_failure("youtube_token_response_invalid"))?;
         if token.access_token.trim().is_empty() {
-            bail!("YouTube token 响应缺少有效 access token");
+            return Err(youtube_oauth_failure("youtube_token_response_invalid"));
         }
         tracing::info!(
             provider = "youtube",
             oauth_stage = "token_exchange_succeeded"
         );
-        let (channel_id, display_name, avatar_url) =
-            self.fetch_channel_profile(&token.access_token).await?;
+        let (channel_id, display_name, avatar_url) = self
+            .fetch_channel_profile(&token.access_token)
+            .await
+            .map_err(|error| {
+                let reason = if error.to_string().contains("没有可访问") {
+                    "youtube_channel_required"
+                } else {
+                    "youtube_identity_failed"
+                };
+                youtube_oauth_failure(reason)
+            })?;
         tracing::info!(
             provider = "youtube",
             oauth_stage = "token_and_identity_validated"
@@ -391,7 +445,10 @@ impl YoutubePlaylistWriter {
                 avatar_url,
             },
         );
-        self.persist_sessions().await?;
+        if self.persist_sessions().await.is_err() {
+            self.sessions.write().await.remove(&session);
+            return Err(youtube_oauth_failure("youtube_session_save_failed"));
+        }
         tracing::info!(provider = "youtube", oauth_stage = "session_saved");
         Ok((session, config.frontend_url.clone()))
     }
@@ -1937,5 +1994,93 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn token_exchange_failure_has_safe_stage_specific_reason() {
+        use axum::{Router, http::StatusCode, routing::post};
+        for timeout in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    Router::new().route(
+                        "/token",
+                        post(move || async move {
+                            if timeout {
+                                tokio::time::sleep(Duration::from_millis(300)).await;
+                            }
+                            (
+                                StatusCode::BAD_REQUEST,
+                                "sensitive-provider-response-must-not-escape",
+                            )
+                        }),
+                    ),
+                )
+                .await
+                .unwrap()
+            });
+            let writer = YoutubePlaylistWriter::from_config(
+                Some(YoutubeConfig {
+                    client_id: "synthetic".into(),
+                    client_secret: "synthetic".into(),
+                    api_key: String::new(),
+                    redirect_uri: DEFAULT_GOOGLE_REDIRECT_URI.into(),
+                    frontend_url: "http://127.0.0.1:5174".into(),
+                    authorize_url: "http://127.0.0.1:9/auth".into(),
+                    token_url: format!("{base}/token"),
+                    api_base_url: base,
+                }),
+                Client::builder()
+                    .timeout(Duration::from_millis(100))
+                    .build()
+                    .unwrap(),
+            );
+            writer
+                .pending_states
+                .write()
+                .await
+                .insert("synthetic-state".into(), now_secs());
+            let error = writer
+                .complete_authorization("synthetic-code", "synthetic-state")
+                .await
+                .unwrap_err();
+            let expected = if timeout {
+                "youtube_token_timeout"
+            } else {
+                "youtube_token_rejected"
+            };
+            assert_eq!(
+                error.downcast_ref::<YoutubeOAuthFailure>().unwrap().0,
+                expected
+            );
+            assert_eq!(format!("{error:?}"), expected);
+            assert!(writer.sessions.read().await.is_empty());
+            server.abort();
+        }
+    }
+
+    // Opt-in transport probe, no credentials, tokens, identity or response bodies.
+    // This checks reachability only; never OAuth acceptance.
+    #[tokio::test]
+    #[ignore = "requires an explicitly configured local YouTube proxy and internet"]
+    async fn youtube_official_transport_probe() {
+        let proxy = std::env::var("YOUTUBE_HTTPS_PROXY").expect("explicit proxy required");
+        let client = youtube_http_client(Some(&proxy)).unwrap();
+        for url in [
+            "https://oauth2.googleapis.com/token",
+            "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
+        ] {
+            let response = client
+                .get(url)
+                .send()
+                .await
+                .expect("official endpoint must respond over TLS");
+            assert!(matches!(
+                response.status().as_u16(),
+                400 | 401 | 403 | 404 | 405
+            ));
+        }
     }
 }

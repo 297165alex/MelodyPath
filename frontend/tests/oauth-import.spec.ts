@@ -106,3 +106,12 @@ for (const platform of ['spotify', 'youtube']) {
     })
   }
 }
+
+
+test('YouTube token network stage is visible instead of generic OAuth failure', async ({ page }) => {
+  await setup(page)
+  await page.goto('/?oauth=error&provider=youtube&reason=youtube_token_timeout')
+  await expect(page.locator('.oauth-notice')).toContainText('Google 授权码交换超时')
+  await expect(page.locator('.oauth-notice')).toContainText('代理')
+  await expect(page.getByText('YouTube Connected', { exact: false })).toHaveCount(0)
+})

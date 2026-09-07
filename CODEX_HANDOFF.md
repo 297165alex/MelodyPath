@@ -1,5 +1,22 @@
 # MelodyPath 继续工作交接
 
+## 最新更新：仅 YouTube OAuth 故障修复
+
+以下更新优先于后面的历史阶段记录。用户已真人确认 Spotify OAuth、真实歌单读取及公开 URL 导入（TRACK_IMPORT_AVAILABLE，16 首真实歌曲，Import Preview）成功。Spotify public URL import 标记真人验收通过，本轮未改其代码。
+
+YouTube 日志：2026-09-07 03:14:25 UTC callback_received/code_present=true；state_validated；03:14:37 UTC callback_redirect/error/authorization_failed。未出现 token_exchange_succeeded、identity_validated 或 session_saved；随后 session_cookie_present=false。失败定位在授权码交换阶段，未进入 identity/session save。旧日志没有保存底层异常类型，不伪称已取回旧异常。
+
+无凭据网络复现：直连 Google token 和 channels 端点 TCP 连接超时；经 Windows 已启用的本地代理，两端分别返回 HTTP 404/403。项目 reqwest 关闭默认特性，没有启用 Windows system-proxy。修复为 start-backend.ps1 仅将已启用的本地系统代理供给 YOUTUBE_HTTPS_PROXY，YouTube 客户端显式使用；不改变全局 HTTP(S)_PROXY 或 Spotify 网络路径。显式 YOUTUBE_HTTPS_PROXY 优先。不输出代理凭据或任何 OAuth 敏感内容。
+
+新增 YouTube 专用安全错误码与前端文案：token_timeout/network/rejected/response_invalid、channel_required/identity_failed、session_save_failed。保存失败会清除本次未成功保存的内存 session。
+
+验证：cargo fmt/check PASS；Rust 128 passed，1 个联网探测默认 ignored；该探测已另行显式执行并 PASS（同一 Rust YouTube client，无凭据、不读取响应体，不能算 OAuth 成功）。frontend lint/build PASS；浏览器 12 项通过。
+
+状态：READY_FOR_YOUTUBE_REAUTH / WAITING_FOR_USER_GOOGLE_AUTH。从 http://127.0.0.1:5174/ 首页重新点 YouTube Connect（只读）。成功返回应看到 YouTube Connected · 后端已确认授权会话和身份。再点选择我的播放列表验证读取；若失败提交安全错误文案即可，勿发送 code/token/cookie。真实 YouTube 仍未验收，不 push、不 merge、不改 README。
+
+本轮文件：backend/src/writers/youtube.rs、backend/src/main.rs（仅 YouTube callback）、frontend/src/App.tsx（仅 YouTube 错误文案）、frontend/tests/oauth-import.spec.ts、start-backend.ps1、本交接。最后提交用 git log -1 --oneline 获取。恢复时先确认服务 health，然后从本段真人重新授权开始。
+
+
 更新：2026-09-07。唯一项目目录：`C:\Users\user\Downloads\MelodyPath`。
 当前分支：`feature/oauth-public-links`。
 

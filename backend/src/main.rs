@@ -1453,7 +1453,11 @@ async fn youtube_callback(
     let (session, frontend) = match app.youtube.complete_authorization(code, state).await {
         Ok(result) => result,
         Err(error) => {
-            return oauth_redirect(&frontend, "youtube", "error", oauth_error_reason(&error));
+            let reason = error
+                .downcast_ref::<writers::youtube::YoutubeOAuthFailure>()
+                .map(|failure| failure.0)
+                .unwrap_or_else(|| oauth_error_reason(&error));
+            return oauth_redirect(&frontend, "youtube", "error", reason);
         }
     };
     let cookie = session_cookie("melody_youtube_session", &session, 28_800);

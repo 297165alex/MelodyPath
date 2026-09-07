@@ -70,6 +70,13 @@ export default function App() {
       window.history.replaceState({}, '', '/')
     } else if (oauth === 'error') {
       const messages: Record<string, string> = {
+        youtube_token_timeout: 'Google 授权码交换超时：后端未能及时连接 token endpoint，请检查本机代理是否运行后重新连接。',
+        youtube_token_network: 'Google 授权码交换网络失败：请检查后端的 YouTube 代理或网络连接，再重新授权。',
+        youtube_token_rejected: 'Google 拒绝了授权码交换，请检查 Client 配置与回调地址，并重新发起授权。',
+        youtube_token_response_invalid: 'Google 授权码交换返回了无效响应，未建立会话，请重新连接。',
+        youtube_channel_required: '授权码交换成功，但当前账号没有可访问的 YouTube 频道。请先在 YouTube 建立频道后重试。',
+        youtube_identity_failed: '授权码交换成功，但 YouTube 频道身份读取失败，请检查网络、YouTube Data API 和只读权限。',
+        youtube_session_save_failed: 'YouTube 身份验证成功，但本机加密会话保存失败；未建立浏览器连接，请检查本机存储权限。',
         config_required: 'CONFIG_REQUIRED：请先在配置向导检查开发者配置和回调地址。',
         state_mismatch: '授权安全校验失败或已过期，请在同一浏览器从连接按钮重新开始。',
         provider_error: '平台拒绝了授权请求，请在官方页面检查应用配置、账号资格和授权范围后重试。',
