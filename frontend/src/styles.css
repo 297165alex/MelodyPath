@@ -37,6 +37,24 @@ button { cursor: pointer; }
 .topbar nav { display: flex; align-self: stretch; margin-left: auto; }
 .topbar nav button { border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 0 14px; color: #59675f; font-size: 13px; }
 .topbar nav button:hover, .topbar nav button.active { color: var(--forest); border-color: var(--coral); }
+.mobile-menu-toggle, .mobile-nav-description { display: none; }
+.mobile-menu-toggle:focus-visible, .topbar nav button:focus-visible, .welcome-more summary:focus-visible { outline: 2px solid var(--coral); outline-offset: 3px; }
+.welcome-section { padding: 32px max(24px, calc((100vw - 1240px) / 2)); background: var(--forest); color: white; }
+.welcome-section > .eyebrow { color: #efb95f; }
+.welcome-section h2 { margin: 10px 0; font-size: clamp(24px, 3vw, 34px); }
+.welcome-section > p { max-width: 720px; line-height: 1.7; color: #e3eae4; }
+.welcome-section > .primary { background: #efb95f; color: var(--forest); min-height: 46px; }
+.welcome-section > .primary:hover { background: #f5cb87; }
+.welcome-section > .primary:focus-visible { outline: 2px solid white; outline-offset: 4px; }
+.welcome-steps { list-style: none; padding: 0; margin: 22px 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+.welcome-steps li { display: grid; gap: 7px; }
+.welcome-steps span { font-size: 13px; color: #e3eae4; }
+.welcome-more { margin-top: 18px; }
+.welcome-more summary { cursor: pointer; padding: 10px 0; width: fit-content; }
+.welcome-more .task-launcher-grid { margin-top: 10px; }
+.welcome-more .task-launcher-grid b { font-size: 14px; }
+.welcome-more .task-launcher-grid span { font-size: 12px; color: #e3eae4; }
+.import-example { padding: 12px; background: #f5f2ea; line-height: 1.8; border-left: 3px solid var(--coral); }
 .header-status { font-size: 11px; color: #527565; display: flex; align-items: center; gap: 7px; white-space: nowrap; }
 .pulse, .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #aab0ad; display: inline-block; }
 .pulse, .status-dot.online { background: #48a875; box-shadow: 0 0 0 5px rgba(72,168,117,.12); }
@@ -214,6 +232,10 @@ h1, h2, h3, p { margin-top: 0; }
 
 @media (max-width: 1000px) {
   .topbar nav { display: none; }.header-status { margin-left: auto; }
+  .mobile-menu-toggle { display: flex; align-items: center; justify-content: center; gap: 8px; margin-left: auto; min-width: 84px; min-height: 44px; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; color: var(--forest); flex-shrink: 0; }
+  .topbar nav.is-open { display: grid; position: absolute; top: 100%; left: 0; right: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: calc(100dvh - 78px); overflow-y: auto; overscroll-behavior: contain; background: var(--paper); padding: 12px 18px; box-shadow: 0 10px 20px #17392d20; border-bottom: 1px solid var(--line); }
+  .topbar nav button { text-align: left; padding: 12px; min-height: 58px; }
+  .mobile-nav-description { display: block; margin-top: 5px; font-size: 12px; line-height: 1.5; }
   .hero { grid-template-columns: 1fr; padding-top: 60px; }.hero-map { height: 380px; }.input-section { grid-template-columns: 1fr; gap: 30px; }
   .metric-grid { grid-template-columns: 1fr 1fr; }.report-grid, .agent-layout { grid-template-columns: 1fr; }.recommend-grid { grid-template-columns: 1fr; }.import-stats.analysis { grid-template-columns: repeat(3, 1fr); }
   .export-toolbar { align-items: start; flex-direction: column; }.export-toolbar > div:last-child { justify-content: start; }
@@ -222,6 +244,11 @@ h1, h2, h3, p { margin-top: 0; }
   .platform-grid { grid-template-columns: 1fr 1fr; }.link-section { grid-template-columns: 1fr; gap: 28px; }.fallback-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 650px) {
+  .topbar { gap: 12px; }
+  .topbar nav.is-open { max-height: calc(100dvh - 68px); }
+  .welcome-section { padding: 24px 20px; }
+  .welcome-steps { grid-template-columns: 1fr; gap: 14px; }
+  .welcome-more .task-launcher-grid { grid-template-columns: 1fr; }
   .topbar { height: 68px; padding: 0 18px; }.header-status { display: none; }.hero { padding: 50px 20px; }.hero h1 { font-size: 45px; letter-spacing: -2px; }.hero-map { height: 300px; }.trust-row { gap: 8px 14px; }.hero-actions { flex-direction: column; }.demo-banner { margin: 0; flex-wrap: wrap; }.demo-banner p { order: 3; flex-basis: 100%; }.input-section, .page-width { padding-left: 18px; padding-right: 18px; }.page-intro { flex-direction: column; gap: 5px; }.metric-grid, .comparison-metrics, .compact-track-grid, .settings-grid { grid-template-columns: 1fr; }.route-panel { grid-template-columns: 1fr; gap: 22px; }.route-line, .route-step > b { display: none; }.page-cta { flex-direction: column; align-items: start; }.people-card { padding: 28px 22px; }.site-footer { flex-direction: column; padding: 20px; }.export-modal { padding: 18px; }.match-row { grid-template-columns: 1fr 70px; }.confidence { grid-column: 1 / -1; }.result-stats { grid-template-columns: 1fr 1fr; }.pick-row { grid-template-columns: 18px 20px 1fr; }.version-chip { display: none; }.usage-grid { grid-template-columns: 1fr 1fr; }.history-summary { flex-wrap: wrap; gap: 18px; }.history-summary button { margin-left: 0; }.table-row { grid-template-columns: 1fr .7fr; }.table-row > span:nth-child(3) { display: none; }
   .connection-section, .link-section, .more-import-section { padding-left: 18px; padding-right: 18px; }.platform-grid { grid-template-columns: 1fr; }.platform-group-title span { display: none; }.spotify-policy { grid-template-columns: 1fr; }.spotify-policy small { grid-column: auto; }.link-input-row { flex-direction: column; }.fallback-grid { padding: 0 8px 8px; }.spotify-playlist { grid-template-columns: 18px 40px 1fr; }.spotify-playlist img, .playlist-placeholder { width: 40px; height: 40px; }.spotify-playlist a { grid-column: 3; }.spotify-restriction { flex-direction: column; gap: 4px; }.import-stats, .import-stats.analysis, .basic-stat-grid { grid-template-columns: 1fr 1fr; }.import-track-head, .import-track-row { grid-template-columns: 25px 1fr 1fr; }.import-track-head span:nth-child(4), .import-track-head span:nth-child(5), .import-track-row > span:nth-child(4), .import-track-row em { display: none; }.preview-actions, .order-confirm { align-items: stretch; flex-direction: column; }.unmatched-row { grid-template-columns: 25px 1fr; }
 }

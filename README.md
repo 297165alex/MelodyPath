@@ -106,6 +106,15 @@ Windows 推荐在项目根目录一次启动前后端。首次运行会在缺少
 
 
 
+### 第一次体验：沿着一条路线开始
+
+1. 在首页点击“第一步：导入我的歌单”，上传文件（可用 `examples/Happy_Mix.csv`）或粘贴歌曲列表，核对预览并确认。
+2. 查看 Music Profile，了解音乐风格和常听歌手。
+3. 查看推荐，从 Comfort Zone 到 Expansion Zone、Surprise Zone，尝试新的音乐方向。
+4. 进入 Agent，启动任务，查看请求、决策、工具调用、结果与最终说明。
+
+手机和平板可从顶部“菜单”进入全部页面，包括历史和设置。真实推荐需部署者配置 Last.fm；未配置 AI 模型时，Agent 明确使用确定性 fallback。Spotify / YouTube 官方连接用于读取和确认后的传输；体验画像与 Agent 请使用文件或文本。
+
 ### 最快使用方式
 
 如果使用部署者已配置好的 MelodyPath：
@@ -516,7 +525,7 @@ Windows 用户 clone 仓库后，在项目根目录运行：
 
 # Testing
 
-最近一次最终审计记录（2026-09-08；展示优化再次执行下列 fmt、test、release build 及三项前端检查，cargo check 保留既有记录）：
+最近一次最终审计记录（2026-09-08；本轮 UX 优化重跑 cargo test 及三项前端检查，fmt、cargo check、release build 保留既有通过记录）：
 
 | 检查 | 结果 |
 |---|---|
@@ -526,7 +535,7 @@ Windows 用户 clone 仓库后，在项目根目录运行：
 | `cargo build --release --locked` | PASS |
 | `npm --prefix frontend run lint` | PASS |
 | `npm --prefix frontend run build` | PASS |
-| `npm --prefix frontend run test:e2e` | **23/23 PASS（含本轮 Import 状态与 Agent 展示回归）** |
+| `npm --prefix frontend run test:e2e` | **26/26 PASS（含 Import、Agent、首次引导及手机/平板导航回归）** |
 
 Rust 测试覆盖导入格式与大歌单、Genre/艺人/版本规范化、Energy 缺失、Last.fm Provider 降级、三区推荐、候选池换批、源歌单排除、Compare、结构化 AgentDecision、非法工具、动态下一步、步数/费用限制、真实 Analysis 绑定、Copy 分页与匹配、歧义确认、失败隔离、取消/恢复，以及 OAuth 安全边界。
 

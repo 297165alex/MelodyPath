@@ -1,5 +1,68 @@
 import { test, expect, type Page } from '@playwright/test'
 
+for (const width of [390, 768]) {
+  test(`responsive menu reaches every page and closes with Escape at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 740 })
+    await setup(page)
+    await page.route('**/api/settings', route => route.fulfill({ json: {
+      endpoint: 'https://example.invalid', model: 'synthetic', temperature: 0,
+      max_tokens: 100, max_agent_steps: 16, request_timeout_seconds: 10,
+      retry_limit: 0, max_cost_usd: 0, input_price_per_million: 0,
+      output_price_per_million: 0, api_key_available: false,
+    } }))
+    await page.goto('/')
+    const toggle = page.locator('.mobile-menu-toggle')
+    const nav = page.getByRole('navigation', { name: '主导航' })
+    await expect(nav).toBeHidden()
+    await page.screenshot({ path: `test-results/welcome-${width}.png` })
+    await toggle.click()
+    await expect(nav.getByRole('button')).toHaveCount(9)
+    await page.keyboard.press('Escape')
+    await expect(toggle).toBeFocused()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    for (const [entry, heading] of [
+      ['Music Profile', '先导入歌单，了解你的音乐偏好'],
+      ['Compare', '两份真实歌单，一次私密比较'],
+      ['Version Radar', '批量寻找同一首歌的其他正式版本'],
+      ['Agent ·', '从用户请求到工具结果，看清 Agent 的每一步'],
+      ['History', '任务不会随页面消失'],
+      ['Settings', '模型、预算与运行边界'],
+      ['Discover', '先导入并确认一份歌单'],
+      ['Copy Playlist', '选择来源与目标，预览后再复制'],
+      ['Import', '从你的歌单出发，发现下一首喜欢的音乐'],
+    ]) {
+      await toggle.click()
+      const button = nav.getByRole('button').filter({ hasText: entry })
+      await button.scrollIntoViewIfNeeded()
+      await button.click()
+      await expect(nav).toBeHidden()
+      await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible()
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await toggle.click()
+    await page.screenshot({ path: `test-results/mobile-navigation-${width}.png` })
+  })
+}
+
+test('welcome CTA opens import and desktop keeps its full navigation', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await setup(page)
+  await page.goto('/')
+  await expect(page.locator('.mobile-menu-toggle')).toBeHidden()
+  await expect(page.getByRole('navigation', { name: '主导航' }).getByRole('button')).toHaveCount(9)
+  await expect(page.locator('.welcome-steps li')).toHaveCount(3)
+  await page.screenshot({ path: 'test-results/welcome-desktop.png' })
+  await expect(page.locator('.welcome-more')).not.toHaveAttribute('open', '')
+  await page.locator('#more-import summary').click()
+  await page.getByRole('button', { name: '第一步：导入我的歌单' }).click()
+  await expect(page.locator('#more-import details')).toHaveAttribute('open', '')
+  await expect(page.getByRole('button', { name: '解析并预览文本' })).toBeInViewport()
+  await expect(page.locator('#more-import')).toContainText('周杰伦 - 晴天')
+  await page.locator('.welcome-more summary').click()
+  await page.getByRole('button', { name: 'Find another version' }).click()
+  await expect(page).toHaveURL(/\/versions$/)
+})
+
 for (const [platform, capability, access, accessible] of [
   ['netease', 'ACCESSIBILITY_CHECK_ONLY', 'page_reachable', true],
   ['qq_music', 'ACCESSIBILITY_CHECK_ONLY', 'page_reachable', true],
