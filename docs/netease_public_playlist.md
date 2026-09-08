@@ -20,9 +20,11 @@
 
 沿用已有 Track：`title`、`artists`（统一格式中的 artist）、`album`、`duration_ms`、`platform=netease`（source_platform）、`platform_url`（source_url）。不新增另一套 Track。原始来源 URL 进入 ImportedTrack，转换后保存在 `external_ids` 的 `source_platform` / `source_url` 中，供既有 Resolver 克隆时保留来源。
 
-成功时服务端创建 StoredImport 并返回 `import_preview`，前端自动展开原 ImportPreviewPanel。数据标记为 `REAL_PUBLIC_LINK`，`total_rows` 是页面声明总数，`parsed_count` 是实际成功数，`invalid_count` 是两者差值。用户确认后调用原 `/api/imports/:id/analyze`，进入既有 MetadataResolver、Analysis 与 Recommendation。
+链接检查响应使用六个互不混淆的字段：`declared_count` 是页面声明总数，`visible_count` 是页面实际暴露且通过成员身份校验的数量，`imported_count` 是成功生成 Track 的数量，`skipped_count` 只统计已尝试但未能生成 Track 的歌曲，`unexposed_count` 是页面声明存在但未公开暴露的数量，`partial_import` 表示导入没有覆盖页面声明或实际可见的全部成员。20 首处理上限之外的可见歌曲和未公开成员都不计作导入失败。
 
-`import_rows` 只记录本次实际处理的公开候选，状态包括 `IMPORTED`、`SKIPPED_DETAIL_UNAVAILABLE`、`SKIPPED_REQUEST_LIMIT` 和 `SKIPPED_TIME_LIMIT`。未公开成员只计入总量差值，不生成虚构行。成功界面显示“网易云歌单解析成功”和“已导入X/Y首歌曲”；失败显示“检测到网易云歌单，但当前无法获取公开歌曲列表。请使用TXT/CSV备用导入。”
+成功时服务端创建 StoredImport 并返回 `import_preview`，前端自动展开原 ImportPreviewPanel。数据标记为 `REAL_PUBLIC_LINK`；通用预览中的 `total_rows` 是本次实际尝试数，`parsed_count` 是成功导入数，`invalid_count` 只统计已尝试但失败的条目。页面声明总数与可见数分别由 `declared_count`、`visible_count` 展示。用户确认后调用原 `/api/imports/:id/analyze`，进入既有 MetadataResolver、Analysis 与 Recommendation。
+
+`import_rows` 只记录本次实际处理的公开候选，状态包括 `IMPORTED`、`SKIPPED_DETAIL_UNAVAILABLE`、`SKIPPED_REQUEST_LIMIT` 和 `SKIPPED_TIME_LIMIT`。未公开成员只体现在 `unexposed_count` 中，不生成虚构行，也不计入 `skipped_count`。成功界面显示“网易云歌单解析成功”“已导入：X / Y 首歌曲”；部分导入显示“公开页面仅提供部分歌曲”。失败显示“检测到网易云歌单，但当前无法获取公开歌曲列表。请使用 TXT/CSV 导入。”
 
 未修改 Spotify、YouTube、Apple connector，MetadataResolver 核心逻辑或 Recommendation 算法。`metadata.rs` 只扩展了既有 ImportedTrack → Track 的来源字段保留。
 
@@ -30,7 +32,7 @@
 
 - [1196 首公开歌单](https://music.163.com/playlist?id=7736940069)：匿名公开页面声明 1196 首，当前 HTML / JSON-LD 暴露前 10 首，可验证这 10 首并有限补全详情，预期显示实际导入数 / 1196。
 - [106 首公开歌单](https://music.163.com/playlist?id=7558013954)：匿名公开页面声明 106 首，当前页面同样暴露 10 首，用于验证公开前缀行为不是单一样本特例。
-- [200 首公开歌单](https://music.163.com/playlist?id=3778678)：前置实测 DOM 可列出 200 个歌曲 ID，用于验证 20 首上限与完整 route → preview → analysis 流程。
+- [100 首公开歌单](https://music.163.com/playlist?id=19723756)：用于验证 20 首上限与完整 route → preview → analysis 流程。旧样本 `3778678` 曾返回无法交叉验证的公开结构，相关响应形态保留为确定性 fallback fixture，不再作为实时成功基线。
 - [官方歌曲页](https://music.163.com/song?id=3399839173)：前置实测 `MusicRecording` 提供标题、艺人、专辑和 ISO 时长。
 
 公开页面结构、地区可见性和返回数量可能改变。解析器在身份或结构无法验证时降级，不声称官方授权 API 或完整歌单读取。Last.fm 未配置时，既有推荐流程会明确返回 `not_configured`，不会用 Demo 代替真实推荐。
@@ -38,18 +40,19 @@
 ## 测试入口
 
 - `cargo test --workspace`
+- `cargo test --workspace netease_real_small_public_playlist_acceptance -- --ignored --nocapture`（真实小歌单）
 - `cargo test --workspace netease_real_partial_public_page_acceptance -- --ignored --nocapture`（真实 1196 首页面的有限公开前缀）
-- `cargo test --workspace netease_real_public_import_preview_and_analysis -- --ignored --nocapture`（真实 HTTP 路由 → 存储预览 → 用户确认端点 → Resolver / Recommendation）
+- `cargo test --workspace netease_real_large_public_import_preview_and_analysis -- --ignored --nocapture`（真实大歌单 HTTP 路由 → 存储预览 → 用户确认端点 → Resolver / Recommendation）
 - `npm --prefix frontend run lint`
 - `npm --prefix frontend run build`
 - `npm --prefix frontend run test:e2e`
 
-离线测试覆盖 DOM 容器归属、推荐区排除、HTML 实体、JSON-LD 前缀一致性、重复/数量/顺序/身份冲突、20 首候选上限、恶意 URL、可选字段 null、单项失败隔离、请求预算、批次超时和来源字段保留。前端合成契约验证部分导入、真实分母、限制提示、`REAL_PUBLIC_LINK`、确认前不分析以及确认后进入原分析与推荐页面；合成测试不冒充真实平台验收。
+离线测试覆盖小歌单、大歌单、部分公开歌单、旧 `3778678` fallback、无效 URL、六项计数字段、DOM 容器归属、推荐区排除、HTML 实体、JSON-LD 前缀一致性、重复/数量/顺序/身份冲突、20 首候选上限、恶意 URL、可选字段 null、单项失败隔离、请求预算、批次超时和来源字段保留。前端合成契约验证部分导入、真实分母、限制提示、`REAL_PUBLIC_LINK`、确认前不分析以及确认后进入原分析与推荐页面；合成测试不冒充真实平台验收。
 
 ## 本轮验收结果
 
 - 真实 1196 首样本：匿名页面声明 1196 首并公开 10 个可验证候选，结果为 `imported=10`、`status=public_html_tracks_imported`，联网验收 PASS。界面分母保持 1196，不把其余歌曲构造成 Track。
-- 真实 200 首样本：生产 HTTP handler 返回 `Imported 20 / 200 tracks`；服务端创建 `REAL_PUBLIC_LINK` 预览，经确认分析端点得到 20 首非 Demo 曲目和 20 条 Resolver 结果。Recommendation pipeline 已执行，当前未配置 Last.fm，因此状态为 `not_configured`。联网 route → preview → analysis 验收 PASS。
-- `cargo test --workspace`：160 passed / 0 failed / 3 ignored。两项网易云联网测试已显式单独执行通过；另一项 ignored 是既有 YouTube 联网探测。
+- 真实大歌单样本通过 100 首公开歌单验证：生产 HTTP handler 最多导入前 20 首；服务端创建 `REAL_PUBLIC_LINK` 预览，经确认后进入原 Resolver / Recommendation 调用链。
+- 本轮字段收口回归：`cargo test --workspace` 为 166 passed / 0 failed / 4 ignored。三个网易云真实公网样本仍保持默认 ignored，并已逐项显式单线程执行：小歌单 PASS、1196 首部分公开歌单 PASS、100 首大歌单完整 route → preview → analysis PASS。第四个 ignored 是既有 YouTube 联网探测。
 - `cargo fmt --all --check`、前端 lint、build：PASS。
 - 前端 E2E：32/32 PASS，覆盖中文成功/失败文案、真实分母、20 首限制提示、Import Preview、确认闸门及进入现有分析/推荐页面。前端使用合成 HTTP 契约；真实平台读取由上述后端联网验收覆盖，二者不混称。

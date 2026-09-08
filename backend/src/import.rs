@@ -67,7 +67,7 @@ impl StoredImport {
         {
             return None;
         }
-        let total = result.track_count?;
+        let total = result.declared_count?;
         let tracks: Vec<_> = result
             .preview_tracks
             .iter()
@@ -97,11 +97,12 @@ impl StoredImport {
             data_state: DataState::RealPublicLink,
             source_label: format!(
                 "网易云公开歌单 · Imported {} / {} tracks",
-                tracks.len(),
-                total
+                result.imported_count, total
             ),
-            total_rows: total,
-            invalid_count: total.saturating_sub(tracks.len()),
+            total_rows: result.imported_count + result.skipped_count,
+            // Hidden playlist members are not invalid source rows. Only visible
+            // members that failed deterministic import are counted as invalid.
+            invalid_count: result.skipped_count,
             detected_fields: vec![
                 "title".into(),
                 "artist".into(),

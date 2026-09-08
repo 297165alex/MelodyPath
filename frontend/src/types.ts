@@ -270,6 +270,12 @@ export interface PlaylistLinkInspection {
   publicly_accessible?: boolean
   access_status: string
   playlist_name?: string
+  declared_count?: number
+  visible_count: number
+  imported_count: number
+  skipped_count: number
+  unexposed_count: number
+  partial_import: boolean
   track_count?: number
   preview_tracks: Track[]
   can_analyze: boolean

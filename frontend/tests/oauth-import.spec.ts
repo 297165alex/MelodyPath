@@ -76,6 +76,7 @@ for (const [platform, capability, access, accessible] of [
     await page.route('**/api/playlists/inspect-link', route => route.fulfill({ json: {
       recognized: true, platform, platform_label: platform, capability,
       publicly_accessible: accessible, access_status: access, preview_tracks: [],
+      declared_count: null, visible_count: 0, imported_count: 0, skipped_count: 0, unexposed_count: 0, partial_import: false,
       track_count: null, can_analyze: false, message: 'Synthetic accessibility contract',
       next_step: 'Synthetic fixture only',
     } }))
@@ -84,7 +85,7 @@ for (const [platform, capability, access, accessible] of [
     await page.getByRole('button', { name: '检查链接读取能力' }).click()
     const result = page.locator('.link-result')
     await expect(result).toContainText('已识别公开歌单链接')
-    await expect(result).toContainText(platform === 'netease' ? '检测到网易云歌单，但当前无法获取公开歌曲列表。请使用TXT/CSV备用导入。' : '当前无法通过官方接口读取完整歌曲列表')
+    await expect(result).toContainText(platform === 'netease' ? '检测到网易云歌单，但当前无法获取公开歌曲列表。请使用 TXT/CSV 导入。' : '当前无法通过官方接口读取完整歌曲列表')
     await expect(result).toContainText('CSV / TXT / JSON / M3U')
     await expect(result).toContainText('歌手 - 歌名')
     await expect(result).toContainText(accessible === true ? '页面可访问（不代表歌曲已读取）' : accessible === false ? '页面不可访问' : access === 'check_failed' ? '检查失败' : '未检查')
@@ -106,7 +107,9 @@ test('NetEase public metadata shows declared count without creating Import Previ
     recognized: true, platform: 'netease', platform_label: '网易云音乐',
     capability: 'ACCESSIBILITY_CHECK_ONLY', publicly_accessible: true,
     access_status: 'page_reachable', playlist_id: '123456', playlist_id_valid: true,
-    playlist_name: 'Synthetic 公开歌单', track_count: 15, preview_tracks: [], import_rows: [],
+    playlist_name: 'Synthetic 公开歌单', declared_count: 15, visible_count: 0,
+    imported_count: 0, skipped_count: 0, unexposed_count: 15, partial_import: false,
+    track_count: 15, preview_tracks: [], import_rows: [],
     structured_data_status: 'public_track_list_incomplete', can_analyze: false,
     message: '公开页面声明 15 首，JSON-LD 实际列出 10 项。公开歌曲列表不完整。未生成 Track。',
     next_step: '请使用文件或文本导入。',
@@ -116,7 +119,7 @@ test('NetEase public metadata shows declared count without creating Import Previ
   await page.getByRole('button', { name: '检查链接读取能力' }).click()
   const result = page.locator('.link-result')
   await expect(result).toContainText('Synthetic 公开歌单')
-  await expect(result).toContainText('页面声明 15 首（不是已导入数量）')
+  await expect(result).toContainText('页面声明 15 首 · 实际可见 0 首 · 导入失败 0 首 · 未公开 15 首')
   await expect(result).toContainText('JSON-LD 实际列出 10 项')
   await expect(result.locator('.link-preview')).toHaveCount(0)
   await expect(result.getByRole('button', { name: /确认/ })).toHaveCount(0)
@@ -403,13 +406,14 @@ test('NetEase partial import uses the existing preview and confirmed analysis fl
   let analyses = 0
   const preview = { ...importPreviewFixture('netease-preview'), file_name: undefined,
     name: 'Synthetic NetEase', source_label: '网易云公开歌单 · Imported 2 / 1196 tracks', data_state: 'REAL_PUBLIC_LINK',
-    total_rows: 1196, invalid_count: 1194, questions: ['Imported 2 / 1196 tracks · 未导入 1194 首'],
+    total_rows: 3, invalid_count: 1, questions: ['网易云歌单解析成功\n公开页面仅提供部分歌曲，\n已导入 2 / 1196 首歌曲'],
   }
   await page.route('**/api/playlists/inspect-link', route => route.fulfill({ json: {
     recognized: true, platform: 'netease', platform_label: '网易云音乐', capability: 'TRACK_IMPORT_AVAILABLE',
     publicly_accessible: true, access_status: 'page_reachable', playlist_id_valid: true,
+    declared_count: 1196, visible_count: 3, imported_count: 2, skipped_count: 1, unexposed_count: 1193, partial_import: true,
     playlist_name: 'Synthetic NetEase', track_count: 1196, preview_tracks: [{ title: '晴天', artists: ['周杰伦'] }, { title: 'Blueming', artists: ['IU'] }],
-    can_analyze: true, message: '网易云歌单解析成功。已导入2/1196首歌曲；未导入1194首。 当前公开页面解析限制，仅导入前20首歌曲用于分析。', next_step: '核对预览后分析', import_preview: preview,
+    can_analyze: true, message: '网易云歌单解析成功\n公开页面仅提供部分歌曲，\n已导入 2 / 1196 首歌曲', next_step: '核对预览后分析', import_preview: preview,
     import_rows: [{ track_title: 'Unavailable', source_platform: 'netease', import_status: 'SKIPPED_DETAIL_UNAVAILABLE', availability: 'UNKNOWN' }],
   } }))
   await page.route('**/api/imports/netease-preview/analyze', route => {
@@ -420,8 +424,7 @@ test('NetEase partial import uses the existing preview and confirmed analysis fl
   await page.locator('#playlist-link').fill('https://y.music.163.com/m/playlist?id=123')
   await page.getByRole('button', { name: '检查链接读取能力' }).click()
   await expect(page.locator('.link-result')).toContainText('网易云歌单解析成功')
-  await expect(page.locator('.link-result')).toContainText('已导入2/1196首歌曲')
-  await expect(page.locator('.link-result')).toContainText('当前公开页面解析限制，仅导入前20首歌曲用于分析')
+  await expect(page.locator('.link-result')).toContainText('公开页面仅提供部分歌曲，已导入 2 / 1196 首歌曲')
   await expect(page.locator('.import-preview')).toContainText('Imported 2 / 1196 tracks')
   await expect(page.locator('.import-preview')).toContainText('REAL_PUBLIC_LINK')
   await page.locator('.link-result summary').click()

@@ -401,6 +401,12 @@ impl PlatformService {
                 access_status: "unrecognized".into(),
                 structured_data_status: "not_checked".into(),
                 playlist_name: None,
+                declared_count: None,
+                visible_count: 0,
+                imported_count: 0,
+                skipped_count: 0,
+                unexposed_count: 0,
+                partial_import: false,
                 track_count: None,
                 preview_tracks: vec![],
                 can_analyze: false,
@@ -524,29 +530,42 @@ impl PlatformService {
             ),
         };
 
-        let (tracks, rows) = imported_page
-            .map(|p| (p.tracks, p.rows))
+        let (tracks, rows, visible_count) = imported_page
+            .map(|p| (p.tracks, p.rows, p.visible_count))
             .unwrap_or_default();
         let can_analyze = !tracks.is_empty();
+        let declared_count = public_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.declared_tracks);
+        let imported_count = tracks.len();
+        let skipped_count = rows
+            .iter()
+            .filter(|row| row.import_status == "SKIPPED_DETAIL_UNAVAILABLE")
+            .count();
+        let (unexposed_count, partial_import) =
+            netease_import_state(declared_count, visible_count, imported_count);
         let message = if !rows.is_empty() && !tracks.is_empty() {
-            let total = public_metadata
-                .as_ref()
-                .and_then(|metadata| metadata.declared_tracks)
-                .unwrap_or(rows.len());
-            let limit = if total > 20 {
-                " 当前公开页面解析限制，仅导入前20首歌曲用于分析。"
+            let total = declared_count.unwrap_or(visible_count);
+            if unexposed_count > 0 {
+                format!(
+                    "网易云歌单解析成功\n公开页面仅提供部分歌曲，\n已导入 {} / {} 首歌曲",
+                    imported_count, total
+                )
             } else {
-                ""
-            };
-            format!(
-                "网易云歌单解析成功。已导入{}/{}首歌曲；未导入{}首。{}请核对 Import Preview 与逐项报告。",
-                tracks.len(),
-                total,
-                total.saturating_sub(tracks.len()),
-                limit
-            )
+                let reason = if visible_count > netease_tracks::MAX_DETAILS {
+                    "原因：当前公开页面解析限制，仅导入前20首歌曲用于分析。"
+                } else if skipped_count > 0 {
+                    "原因：部分公开歌曲缺少可验证元数据。"
+                } else {
+                    ""
+                };
+                format!(
+                    "网易云歌单解析成功\n已导入：{} / {} 首歌曲\n{}",
+                    imported_count, total, reason
+                )
+            }
         } else if link.platform == "netease" {
-            "检测到网易云歌单，但当前无法获取公开歌曲列表。请使用TXT/CSV备用导入。".into()
+            "检测到网易云歌单，\n但当前无法获取公开歌曲列表。\n请使用 TXT/CSV 导入。".into()
         } else {
             message
         };
@@ -574,7 +593,13 @@ impl PlatformService {
                 structured_data_status
             },
             playlist_name: public_metadata.as_ref().and_then(|m| m.name.clone()),
-            track_count: public_metadata.as_ref().and_then(|m| m.declared_tracks),
+            declared_count,
+            visible_count,
+            imported_count,
+            skipped_count,
+            unexposed_count,
+            partial_import,
+            track_count: declared_count,
             preview_tracks: tracks,
             can_analyze,
             message,
@@ -588,6 +613,21 @@ impl PlatformService {
             },
         })
     }
+}
+
+fn netease_import_state(
+    declared_count: Option<usize>,
+    visible_count: usize,
+    imported_count: usize,
+) -> (usize, bool) {
+    let unexposed_count = declared_count
+        .map(|declared| declared.saturating_sub(visible_count))
+        .unwrap_or(0);
+    let partial_import = imported_count > 0
+        && declared_count
+            .map(|declared| imported_count < declared)
+            .unwrap_or(imported_count < visible_count);
+    (unexposed_count, partial_import)
 }
 
 // A bounded complete body is required before parsing NetEase metadata. A partial
@@ -840,6 +880,12 @@ fn recognition_result(link: &RecognizedLink) -> PlaylistLinkInspection {
         access_status: "not_checked".into(),
         structured_data_status: "not_checked".into(),
         playlist_name: None,
+        declared_count: None,
+        visible_count: 0,
+        imported_count: 0,
+        skipped_count: 0,
+        unexposed_count: 0,
+        partial_import: false,
         track_count: None,
         preview_tracks: vec![],
         can_analyze: false,
@@ -1200,7 +1246,36 @@ mod tests {
             assert!(!result.playlist_id_valid);
             assert_eq!(result.access_status, "not_checked");
             assert!(result.preview_tracks.is_empty());
+            assert_eq!(result.declared_count, None);
+            assert_eq!(result.visible_count, 0);
+            assert_eq!(result.imported_count, 0);
+            assert_eq!(result.skipped_count, 0);
+            assert_eq!(result.unexposed_count, 0);
+            assert!(!result.partial_import);
         }
+    }
+
+    #[test]
+    fn netease_invalid_url_has_no_import_counts() {
+        let link = recognize_link("https://music.163.com/playlist?id=not-a-number")
+            .unwrap()
+            .unwrap();
+        let result = recognition_result(&link);
+        assert!(!result.playlist_id_valid);
+        assert_eq!(result.declared_count, None);
+        assert_eq!(result.visible_count, 0);
+        assert_eq!(result.imported_count, 0);
+        assert_eq!(result.skipped_count, 0);
+        assert_eq!(result.unexposed_count, 0);
+        assert!(!result.partial_import);
+    }
+
+    #[test]
+    fn netease_count_state_distinguishes_complete_large_and_partially_exposed() {
+        assert_eq!(netease_import_state(Some(5), 5, 5), (0, false));
+        assert_eq!(netease_import_state(Some(200), 200, 20), (0, true));
+        assert_eq!(netease_import_state(Some(1196), 10, 10), (1186, true));
+        assert_eq!(netease_import_state(Some(10), 10, 8), (0, true));
     }
 
     #[test]
@@ -1250,6 +1325,35 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Explicit anonymous network acceptance; public page availability may change"]
+    async fn netease_real_small_public_playlist_acceptance() {
+        let result = PlatformService::new()
+            .inspect_link("https://music.163.com/playlist?id=7299150850")
+            .await
+            .unwrap();
+        assert_eq!(result.playlist_id.as_deref(), Some("7299150850"));
+        assert_eq!(result.publicly_accessible, Some(true));
+        assert!(result.declared_count.is_some_and(|count| count <= 20));
+        assert!(result.visible_count >= result.imported_count);
+        assert!(result.imported_count <= netease_tracks::MAX_DETAILS);
+        assert_eq!(
+            result.skipped_count,
+            result
+                .import_rows
+                .iter()
+                .filter(|row| row.import_status == "SKIPPED_DETAIL_UNAVAILABLE")
+                .count()
+        );
+        assert_eq!(
+            result.unexposed_count,
+            result
+                .declared_count
+                .unwrap()
+                .saturating_sub(result.visible_count)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Explicit anonymous network acceptance; public page availability may change"]
     async fn netease_real_partial_public_page_acceptance() {
         let result = PlatformService::new()
             .inspect_link("https://y.music.163.com/m/playlist?id=7736940069")
@@ -1263,18 +1367,27 @@ mod tests {
             result.structured_data_status
         );
         assert_eq!(result.track_count, Some(1196));
+        assert_eq!(result.declared_count, Some(1196));
+        assert!(result.visible_count > 0 && result.visible_count < 1196);
+        assert_eq!(result.imported_count, result.preview_tracks.len());
+        assert_eq!(
+            result.skipped_count,
+            result
+                .import_rows
+                .iter()
+                .filter(|row| row.import_status == "SKIPPED_DETAIL_UNAVAILABLE")
+                .count()
+        );
+        assert_eq!(result.unexposed_count, 1196 - result.visible_count);
+        assert!(result.partial_import);
         assert_eq!(
             result.capability,
             PublicLinkCapability::TrackImportAvailable
         );
         assert!(!result.preview_tracks.is_empty() && result.preview_tracks.len() <= 20);
-        assert_eq!(result.import_rows.len(), result.preview_tracks.len());
+        assert!(result.import_rows.len() <= 20);
         assert!(result.can_analyze);
-        assert!(
-            result
-                .message
-                .contains("当前公开页面解析限制，仅导入前20首歌曲用于分析")
-        );
+        assert!(result.message.contains("公开页面仅提供部分歌曲"));
         // Aggregate public metadata only; never output raw pages or headers.
         println!(
             "declared={:?}; status={}; imported={}",

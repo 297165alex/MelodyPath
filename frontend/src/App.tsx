@@ -149,6 +149,16 @@ function Logo() {
 function LinkImportStatus({ result }: { result: PlaylistLinkInspection }) {
   const hasTracks = result.capability === 'TRACK_IMPORT_AVAILABLE' && result.preview_tracks.length > 0
   const chinaPlatform = ['netease', 'qq_music', 'kugou', 'qishui'].includes(result.platform ?? '')
+  const declaredCount = result.declared_count ?? result.track_count
+  const visibleCount = result.visible_count ?? result.preview_tracks.length
+  const importedCount = result.imported_count ?? result.preview_tracks.length
+  const skippedCount = result.skipped_count ?? result.import_rows?.filter(row => row.import_status === 'SKIPPED_DETAIL_UNAVAILABLE').length ?? 0
+  const unexposedCount = result.unexposed_count ?? Math.max(0, (declaredCount ?? visibleCount) - visibleCount)
+  const neteaseReason = visibleCount > 20
+      ? '当前公开页面解析限制，仅导入前20首歌曲用于分析。'
+      : skippedCount > 0
+        ? '部分公开歌曲缺少可验证元数据。'
+        : '公开页面已提供可验证歌曲。'
   const accessibility = result.publicly_accessible === true ? '页面可访问（不代表歌曲已读取）'
     : result.publicly_accessible === false ? '页面不可访问'
       : result.access_status === 'check_failed' ? '检查失败，无法确认可访问性'
@@ -156,8 +166,8 @@ function LinkImportStatus({ result }: { result: PlaylistLinkInspection }) {
   return <div className="import-stages" aria-label="公开链接读取状态">
     <p><b>1 · URL Recognition / 链接识别</b><span>{result.recognized ? `${result.platform === 'netease' ? 'NetEase playlist detected · ' : ''}已识别公开歌单链接 · ${result.platform_label}` : '未识别为支持的公开歌单链接'}</span></p>
     <p><b>2 · Accessibility Check / 可访问性检查</b><span>{accessibility}</span></p>
-    {result.platform === 'netease' && (result.playlist_name != null || result.track_count != null) && <p><b>公开页面元数据</b><span>{result.playlist_name ?? '歌单名称未知'} · 页面声明 {result.track_count ?? '未知'} 首（不是已导入数量）</span></p>}
-    <p><b>3 · Track Import / 歌曲读取</b><span>{result.platform === 'netease' ? (hasTracks ? `网易云歌单解析成功 · 已导入${result.preview_tracks.length}/${result.track_count ?? '?'}首歌曲${(result.track_count ?? 0) > 20 ? ' · 当前公开页面解析限制，仅导入前20首歌曲用于分析' : ''}` : '检测到网易云歌单，但当前无法获取公开歌曲列表。请使用TXT/CSV备用导入。') : hasTracks ? `官方 API 已返回 ${result.track_count ?? result.preview_tracks.length} 首歌曲，请核对预览。` : chinaPlatform ? '尚未导入歌曲。当前无法通过官方接口读取完整歌曲列表。' : '尚未获得可导入歌曲，请按下方提示完成配置、授权或重试。'}</span></p>
+    {result.platform === 'netease' && (result.playlist_name != null || declaredCount != null) && <p><b>公开页面元数据</b><span>{result.playlist_name ?? '歌单名称未知'} · 页面声明 {declaredCount ?? '未知'} 首 · 实际可见 {visibleCount} 首 · 导入失败 {skippedCount} 首 · 未公开 {unexposedCount} 首</span></p>}
+    <p><b>3 · Track Import / 歌曲读取</b><span>{result.platform === 'netease' ? (hasTracks ? <>网易云歌单解析成功<br/>{unexposedCount > 0 ? <>公开页面仅提供部分歌曲，<br/>已导入 {importedCount} / {declaredCount ?? visibleCount} 首歌曲</> : <>已导入：{importedCount} / {declaredCount ?? visibleCount} 首歌曲<br/>{neteaseReason}</>}</> : <>检测到网易云歌单，<br/>但当前无法获取公开歌曲列表。<br/>请使用 TXT/CSV 导入。</>) : hasTracks ? `官方 API 已返回 ${result.track_count ?? result.preview_tracks.length} 首歌曲，请核对预览。` : chinaPlatform ? '尚未导入歌曲。当前无法通过官方接口读取完整歌曲列表。' : '尚未获得可导入歌曲，请按下方提示完成配置、授权或重试。'}</span></p>
     {chinaPlatform && !hasTracks && <p className="import-next-step"><b>下一步：提供歌曲列表</b><span>上传 CSV / TXT / JSON / M3U，或直接粘贴：歌手 - 歌名。</span></p>}
   </div>
 }

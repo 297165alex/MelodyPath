@@ -747,6 +747,25 @@ pub struct PlaylistLinkInspection {
     pub access_status: String,
     pub structured_data_status: String,
     pub playlist_name: Option<String>,
+    /// Total number declared by the public playlist page, when verifiable.
+    #[serde(default)]
+    pub declared_count: Option<usize>,
+    /// Number of playlist members actually exposed by the public page.
+    #[serde(default)]
+    pub visible_count: usize,
+    /// Number of visible members converted into real Track values.
+    #[serde(default)]
+    pub imported_count: usize,
+    /// Attempted visible members that failed deterministic Track conversion.
+    #[serde(default)]
+    pub skipped_count: usize,
+    /// Declared playlist members that the public page did not expose as verifiable songs.
+    #[serde(default)]
+    pub unexposed_count: usize,
+    /// True when the imported tracks do not cover the declared or visible playlist members.
+    #[serde(default)]
+    pub partial_import: bool,
+    /// Legacy platform-neutral count. NetEase callers should use the explicit count fields above.
     pub track_count: Option<usize>,
     pub preview_tracks: Vec<Track>,
     pub can_analyze: bool,

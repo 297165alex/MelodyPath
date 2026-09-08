@@ -2101,7 +2101,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Explicit public NetEase HTML and existing metadata/recommendation pipeline network acceptance"]
-    async fn netease_real_public_import_preview_and_analysis() {
+    async fn netease_real_large_public_import_preview_and_analysis() {
         let router = test_app().await;
         let response = router
             .clone()
@@ -2111,7 +2111,7 @@ mod tests {
                     .uri("/api/playlists/inspect-link")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"url":"https://y.music.163.com/m/playlist?id=3778678"}"#,
+                        r#"{"url":"https://music.163.com/playlist?id=19723756"}"#,
                     ))
                     .unwrap(),
             )
@@ -2129,9 +2129,25 @@ mod tests {
         let preview = inspection.import_preview.unwrap();
         assert_eq!(preview.data_state, models::DataState::RealPublicLink);
         assert!(preview.parsed_count > 0 && preview.parsed_count <= 20);
+        assert_eq!(inspection.declared_count, Some(100));
+        assert!(inspection.visible_count >= inspection.imported_count);
+        assert_eq!(inspection.imported_count, preview.parsed_count);
         assert_eq!(
-            preview.parsed_count + preview.invalid_count,
-            preview.total_rows
+            inspection.skipped_count,
+            inspection
+                .import_rows
+                .iter()
+                .filter(|row| row.import_status == "SKIPPED_DETAIL_UNAVAILABLE")
+                .count()
+        );
+        assert_eq!(
+            inspection.unexposed_count,
+            100usize.saturating_sub(inspection.visible_count)
+        );
+        assert!(inspection.partial_import);
+        assert_eq!(
+            preview.total_rows,
+            inspection.imported_count + inspection.skipped_count
         );
         assert!(!inspection.import_rows.is_empty() && inspection.import_rows.len() <= 20);
         println!(

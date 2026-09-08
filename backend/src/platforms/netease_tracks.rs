@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::{collections::HashSet, future::Future, sync::LazyLock, time::Duration};
 use tokio::time::{Instant, timeout_at};
 
-const MAX_DETAILS: usize = 20;
+pub(super) const MAX_DETAILS: usize = 20;
 const BUDGET: Duration = Duration::from_secs(20);
 static DETAIL_CLIENT: LazyLock<Client> = LazyLock::new(|| {
     Client::builder()
@@ -30,6 +30,13 @@ struct Song {
 pub(super) struct ImportedPage {
     pub tracks: Vec<Track>,
     pub rows: Vec<PlaylistImportRow>,
+    pub visible_count: usize,
+}
+
+#[derive(Debug)]
+struct VisibleSongs {
+    songs: Vec<Song>,
+    count: usize,
 }
 
 fn selector(value: &str) -> Selector {
@@ -132,7 +139,7 @@ fn recording(value: &Value, id: &str) -> Option<Track> {
     })
 }
 
-fn songs(body: &[u8], playlist_id: &str) -> Result<Vec<Song>, &'static str> {
+fn songs(body: &[u8], playlist_id: &str) -> Result<VisibleSongs, &'static str> {
     let html = std::str::from_utf8(body).map_err(|_| "invalid_public_page_encoding")?;
     let json = documents(html);
     let playlist = json
@@ -166,7 +173,10 @@ fn songs(body: &[u8], playlist_id: &str) -> Result<Vec<Song>, &'static str> {
         })
         .collect();
     if schema.len() == total && unique(&schema) {
-        return Ok(schema.into_iter().take(MAX_DETAILS).collect());
+        return Ok(VisibleSongs {
+            count: schema.len(),
+            songs: schema.into_iter().take(MAX_DETAILS).collect(),
+        });
     }
     let dom = Html::parse_document(html);
     let containers: Vec<_> = dom.select(&selector("#song-list-pre-cache")).collect();
@@ -204,7 +214,10 @@ fn songs(body: &[u8], playlist_id: &str) -> Result<Vec<Song>, &'static str> {
     {
         return Err("public_track_list_incomplete");
     }
-    Ok(result.into_iter().take(MAX_DETAILS).collect())
+    Ok(VisibleSongs {
+        count: result.len(),
+        songs: result.into_iter().take(MAX_DETAILS).collect(),
+    })
 }
 fn unique(songs: &[Song]) -> bool {
     songs.iter().map(|s| &s.id).collect::<HashSet<_>>().len() == songs.len()
@@ -236,7 +249,7 @@ async fn detail(id: String) -> Option<Track> {
         .and_then(|v| recording(v, &id))
 }
 async fn hydrate<F, Fut>(
-    songs: Vec<Song>,
+    visible: VisibleSongs,
     playlist_id: &str,
     name: Option<&str>,
     fetch: F,
@@ -252,8 +265,9 @@ where
     let mut output = ImportedPage {
         tracks: vec![],
         rows: vec![],
+        visible_count: visible.count,
     };
-    for song in songs {
+    for song in visible.songs {
         let mut track = song.track;
         let mut status = "IMPORTED";
         if track.is_none() {
@@ -298,8 +312,8 @@ pub(super) async fn import(
     id: &str,
     name: Option<&str>,
 ) -> Result<ImportedPage, &'static str> {
-    let songs = songs(body, id)?;
-    Ok(hydrate(songs, id, name, detail, MAX_DETAILS, BUDGET).await)
+    let visible = songs(body, id)?;
+    Ok(hydrate(visible, id, name, detail, MAX_DETAILS, BUDGET).await)
 }
 
 #[cfg(test)]
@@ -325,16 +339,72 @@ mod tests {
     fn complete_dom_membership_excludes_unrelated_links_and_decodes_entities() {
         let html = page(2, &[1, 2]) + "<a href='/song?id=999'>Recommendation</a>";
         let result = songs(html.as_bytes(), "123").unwrap();
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].title, "A & B");
-        assert_eq!(result[1].id, "2");
+        assert_eq!(result.count, 2);
+        assert_eq!(result.songs.len(), 2);
+        assert_eq!(result.songs[0].title, "A & B");
+        assert_eq!(result.songs[1].id, "2");
     }
     #[test]
     fn partial_public_prefix_is_importable_without_fabricating_hidden_members() {
         let result = songs(page(1196, &[1, 2]).as_bytes(), "123").unwrap();
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].id, "1");
-        assert_eq!(result[1].id, "2");
+        assert_eq!(result.count, 2);
+        assert_eq!(result.songs.len(), 2);
+        assert_eq!(result.songs[0].id, "1");
+        assert_eq!(result.songs[1].id, "2");
+    }
+
+    #[tokio::test]
+    async fn small_public_playlist_reports_visible_and_imported_counts() {
+        let value = json!({
+            "@type":"MusicPlaylist", "numTracks":1,
+            "mainEntityOfPage":{"@id":"https://music.163.com/playlist?id=123"},
+            "track":[{"@type":"MusicRecording", "url":"https://music.163.com/song?id=1",
+                "name":"Synthetic", "byArtist":{"name":"Artist"}}]
+        });
+        let parsed = songs(
+            format!("<script type='application/ld+json'>{value}</script>").as_bytes(),
+            "123",
+        )
+        .unwrap();
+        let output = hydrate(parsed, "123", None, |_| async { None }, 20, BUDGET).await;
+        assert_eq!(output.visible_count, 1);
+        assert_eq!(output.tracks.len(), 1);
+        assert_eq!(output.rows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn large_public_playlist_keeps_pre_limit_visible_count() {
+        let ids: Vec<_> = (1..=30).collect();
+        let parsed = songs(page(30, &ids).as_bytes(), "123").unwrap();
+        let output = hydrate(
+            parsed,
+            "123",
+            None,
+            |id| async move { Some(track(&id)) },
+            20,
+            BUDGET,
+        )
+        .await;
+        assert_eq!(output.visible_count, 30);
+        assert_eq!(output.tracks.len(), 20);
+        assert_eq!(output.visible_count - output.tracks.len(), 10);
+    }
+
+    #[tokio::test]
+    async fn partially_exposed_playlist_does_not_count_hidden_members_as_failures() {
+        let parsed = songs(page(1196, &[1, 2]).as_bytes(), "123").unwrap();
+        let output = hydrate(
+            parsed,
+            "123",
+            None,
+            |id| async move { Some(track(&id)) },
+            20,
+            BUDGET,
+        )
+        .await;
+        assert_eq!(output.visible_count, 2);
+        assert_eq!(output.tracks.len(), 2);
+        assert_eq!(output.visible_count - output.tracks.len(), 0);
     }
 
     #[test]
@@ -359,12 +429,24 @@ mod tests {
     }
 
     #[test]
+    fn legacy_3778678_unverifiable_structure_remains_a_fallback_case() {
+        let body = page(200, &[2, 1])
+            .replace("playlist?id=123", "playlist?id=3778678")
+            .replace("track_playlist-123", "track_playlist-3778678");
+        assert!(matches!(
+            songs(body.as_bytes(), "3778678"),
+            Err("public_track_list_incomplete")
+        ));
+    }
+
+    #[test]
     fn public_candidates_are_capped_at_twenty_before_detail_requests() {
         let ids: Vec<_> = (1..=30).collect();
         let result = songs(page(30, &ids).as_bytes(), "123").unwrap();
-        assert_eq!(result.len(), 20);
-        assert_eq!(result.first().unwrap().id, "1");
-        assert_eq!(result.last().unwrap().id, "20");
+        assert_eq!(result.count, 30);
+        assert_eq!(result.songs.len(), 20);
+        assert_eq!(result.songs.first().unwrap().id, "1");
+        assert_eq!(result.songs.last().unwrap().id, "20");
     }
     #[test]
     fn inline_complete_json_ld_needs_no_detail_fetch_and_missing_optional_fields_stay_null() {
@@ -372,7 +454,7 @@ mod tests {
             "track":[{"@type":"MusicRecording", "url":"https://music.163.com/song?id=1", "name":"Synthetic", "byArtist":{"name":"Artist"}}]});
         let html = format!("<script type='application/ld+json'>{v}</script>");
         let result = songs(html.as_bytes(), "123").unwrap();
-        let track = result[0].track.as_ref().unwrap();
+        let track = result.songs[0].track.as_ref().unwrap();
         assert!(track.album.is_none() && track.duration_ms.is_none());
         assert_eq!(track.platform, "netease");
         assert_eq!(super::tests::track("1").duration_ms, Some(210123));
@@ -401,7 +483,7 @@ mod tests {
     #[tokio::test]
     async fn deadline_preserves_prior_inline_success() {
         let mut list = songs(page(3, &[1, 2, 3]).as_bytes(), "123").unwrap();
-        list[0].track = Some(track("1"));
+        list.songs[0].track = Some(track("1"));
         let output = hydrate(
             list,
             "123",
