@@ -22,9 +22,14 @@
 - 官方证据：[腾讯连连文档](https://cloud.tencent.com/document/product/1081/67456)、[音乐首页](https://y.qq.com/)、[开放平台入口](https://y.qq.com/artists)、[官方首页链接的歌单](https://y.qq.com/n/ryqq_v2/playlist/7520364922)。
 - tests：新增 3 个平台测试，覆盖路径混淆、官方路径变体、跨平台/未知子域/HTTP/私网 IP/恶意协议重定向和跳数限制；`cargo test --workspace platforms::tests` 13 passed / 0 failed，127 filtered out。
 
-## 酷狗音乐
+## 酷狗音乐（本轮判断完成）
 
-本轮尚未审计；当前 URL_RECOGNITION_ONLY + FILE_IMPORT_AVAILABLE。
+- Login/API：官方曲库开放计划为版权/SDK 场景；没有取得适用于本项目的通用 Web 用户歌单 OAuth、用户/公开歌单读取授权规范。企业/商务资格、具体费用、个人 credentials 可申请性未核实，不把曲库 SDK 当个人歌单 API。
+- Public URL：官方首页歌单链接指向 `/songlist/gcid_3zq25x5kz17z038/`。匿名返回 16,583 字符 HTML，为通用导航壳；无该歌单标题、JSON-LD、已知明文初始化数据或可验证完整歌曲列表。网页读取也仅有导航/页脚。
+- implemented：不新增 parser、不解码 gcid；保留 URL_RECOGNITION_ONLY + FILE_IMPORT_AVAILABLE。
+- limitation：只检验这一公开样本，不能断言所有分享页都相同；未发现足够数据就停止，不追逐前端私有接口。
+- 官方证据：[开放计划](https://open.kugou.com/docs/open-player/)、[官方首页](https://www.kugou.com/)、[首页歌单详情](https://www.kugou.com/songlist/gcid_3zq25x5kz17z038/)。
+- tests：沿用本轮 13/13 平台测试中的酷狗 URL 识别/不伪造曲目断言；没有新增 reader，因此分页、缺艺人等 parser 测试不适用。
 
 ## 汽水音乐
 
@@ -33,6 +38,6 @@
 ## 测试、修改、提交与恢复
 
 - 当前修改：本交接文件、`backend/src/platforms.rs`。能力矩阵未升级，未改前端和其他平台 reader。
-- 本地 checkpoint：本记录随 `Document NetEase public-page feasibility checkpoint` 提交；hash 用 `git log --oneline -- CHINA_PLATFORM_HANDOFF.md` 获取。
+- 本地 checkpoints：`72f15f0` 网易云证据；`914c502` QQ 证据和 URL 校验。后续提交用 `git log --oneline -- CHINA_PLATFORM_HANDOFF.md` 获取。
 - 真人验收：当前没有新 URL reader，因此没有可宣称 WAITING_FOR_PUBLIC_PLAYLIST_VERIFICATION 的已实现功能；不要求用户登录或提供凭据。
-- 下一步：取得新增平台测试结果并提交 QQ checkpoint，再完成酷狗的单轮公开页面核查。若遇额度/上下文预警或研究停滞，停止研究，优先测试、更新本文并提交。
+- 下一步：完成汽水单轮公开入口核查，然后全量测试、同步能力审计和最终本地提交。若遇额度/上下文预警或研究停滞，停止研究，优先测试、更新本文并提交。
