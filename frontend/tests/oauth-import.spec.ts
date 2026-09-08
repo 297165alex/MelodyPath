@@ -143,7 +143,7 @@ test('Apple catalog preview shows skipped rows and requires existing Copy confir
     import_rows: [
       { track_title: '中文 日本語 한국어', artist: ['Synthetic Artist'], duration_ms: null, availability: 'UNKNOWN', import_status: 'IMPORTED' },
       { track_title: '中文 日本語 한국어', artist: ['Synthetic Artist'], availability: 'UNKNOWN', import_status: 'SKIPPED_DUPLICATE' },
-      { track_title: null, artist: [], availability: 'UNAVAILABLE', import_status: 'SKIPPED_UNAVAILABLE_METADATA' },
+      { track_title: null, artist: null, availability: 'UNAVAILABLE', import_status: 'SKIPPED_UNAVAILABLE_METADATA' },
     ], message: 'Synthetic contract only, not real verification',
   } }))
   await page.goto('/')
@@ -200,4 +200,5 @@ test('all seven cards disclose credentials and separate real acceptance from fil
   }
   await expect(page.locator('#connection-panel')).toContainText('自行部署')
   await expect(page.locator('#connection-panel')).toContainText('不要求用户提供账号密码或 Cookie')
+  await expect(page.locator('#public-link-panel')).toContainText('中国音乐平台：支持公开链接检测与文件/文本导入，不需要账号密码')
 })

@@ -5,6 +5,24 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
 $backendUrl = 'http://127.0.0.1:3000'
 $preferredFrontendPorts = @(5174, 5173, 5175, 5176, 5177, 5178)
+$frontendRoot = Join-Path $projectRoot 'frontend'
+$npmExecutable = (Get-Command npm.cmd -ErrorAction Stop).Source
+
+# A fresh clone should need only this script. Install the locked frontend
+# dependencies once when Vite is not present; later starts reuse node_modules.
+$viteExecutable = Join-Path $frontendRoot 'node_modules\.bin\vite.cmd'
+if (-not (Test-Path -LiteralPath $viteExecutable)) {
+    Push-Location -LiteralPath $frontendRoot
+    try {
+        & $npmExecutable ci
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm ci failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
 
 function Get-ListeningProcessId {
     param([Parameter(Mandatory)][int]$Port)
@@ -60,11 +78,10 @@ if ($null -eq $frontendPort) {
         throw 'No free frontend port was found in the configured local range.'
     }
 
-    $npmExecutable = (Get-Command npm.cmd -ErrorAction Stop).Source
     $null = Start-Process `
         -FilePath $npmExecutable `
         -ArgumentList @('run', 'dev', '--', '--port', $frontendPort) `
-        -WorkingDirectory (Join-Path $projectRoot 'frontend') `
+        -WorkingDirectory $frontendRoot `
         -WindowStyle Hidden `
         -PassThru
 }

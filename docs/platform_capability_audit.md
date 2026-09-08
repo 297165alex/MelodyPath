@@ -40,7 +40,7 @@
 - 中国平台 `status=FILE_IMPORT_AVAILABLE`，URL 能力独立展示；不能因文件可用升级为官方 API 可用。
 - Apple 缺配置为 `CONFIG_REQUIRED` / `WAITING_FOR_APPLE_DEVELOPER_CREDENTIALS`。配置只做格式和过期检查，Apple 仍可能拒绝其签名、origin 或权限；真正成功的 URL 请求才返回 `TRACK_IMPORT_AVAILABLE`。
 - 继续复用 `/api/playlists/inspect-link`、首页 Import Preview、统一 Track、现有 `From<&Track> for TransferTrack` 和 ExportModal 确认流程。不新增 Apple 写入或私人资料库流程。
-- Apple 返回 `import_rows`：source_platform、playlist_id、playlist_name、track_title、artist、duration_ms、source_url、availability、import_status。缺失信息保留 null / 空艺人数组，不生成 0 时长、虚假艺人或替代歌曲。缺元数据/缺艺人/非 songs 行明确跳过。
+- 各平台统一返回 `import_rows`：source_platform、playlist_id、playlist_name、track_title、artist、duration_ms、source_url、availability、import_status。缺失信息保留 null，不生成 0 时长、虚假艺人或替代歌曲。缺元数据/缺艺人/非 songs 行明确跳过；识别或可访问性检查没有完整曲目时，整个 `import_rows` 保持为空。
 - Apple 同一个 song ID 的重复条目保留在逐项报告，导入曲目只保留第一次有效记录；不同 ID 不按标题强行合并。playParams 缺失且元数据完整时保留曲目，availability=UNKNOWN，不假称可播放。
 - 文件入口继续共用 Import Preview；重复行保持原样，交给已有重复统计。支持 UTF-8 与带 BOM 的 UTF-16 文本；带 Name/Artist 表头的 TAB 文本通过同一个表格解析器。Time 支持明确 `m:ss` / `h:mm:ss`，没有单位的数值不猜测。
 - CSV/TSV/JSON/TXT 是用户整理格式，不声称中国平台原生导出；HTML/XML 未实现。原有 TXT 两种列顺序确认仍保留。
@@ -78,10 +78,16 @@ Spotify/Google OAuth 文件、scope、state 与源歌单写入边界不改动；
 | 酷狗 | 曲库 SDK 不是已获准的个人歌单 API | [官方首页歌单](https://www.kugou.com/songlist/gcid_3zq25x5kz17z038/) 返回通用框架，无足够完整歌曲数据 | URL_RECOGNITION_ONLY + FILE_IMPORT_AVAILABLE |
 | 汽水 | [官方 OpenAPI 列表](https://developer.open-douyin.com/docs/resource/zh-CN/dop/develop/openapi/list) 有推荐能力，没有取得可用歌单读取规范 | [产品入口](https://qishui.douyin.com/) 无歌单结构数据或可核验分享链接；本轮未取得真实短链样本 | URL_RECOGNITION_ONLY + FILE_IMPORT_AVAILABLE |
 
+### 网易云移动公开链接复核（2026-09-08）
+
+用户提供的两条 `https://y.music.163.com/m/playlist?id=...` 官方移动链接均可匿名访问，并重定向到同 ID 的 `https://music.163.com/playlist?id=...`。实现新增精确 `y.music.163.com/m/playlist` 路由识别，提取纯数字 playlist ID，并规范化到主站 URL；`userid`、`creatorId` 等无关查询参数不会进入 canonical URL。
+
+匿名页面结构仍不足以完整导入：两份页面的 `MusicPlaylist` JSON-LD 都只有 10 个实际条目，而页面分别声明 1196 与 106 首；结构化条目没有艺人和时长。没有解码其他页面数据，也没有调用站内接口。因此 `playlist_name`、`track_title`、`artist`、`duration_ms` 等缺失值不会被猜测，`import_rows` 与 `preview_tracks` 保持为空，能力继续为 **ACCESSIBILITY_CHECK_ONLY + FILE_IMPORT_AVAILABLE**。
+
 四平台的企业/商务资格、具体费用及普通开发者歌单 credentials 均缺少适用于本项目的可验证规范，不能写成“绝不存在”或“免费可申请”。样本失败不代表所有页面永远不可读；没有完整性证据就不新增 parser，不以部分曲目冒充成功。
 
 实现成果为网易云/QQ URL 校验修复：精确路径、精确 HTTPS 主机、同平台重定向与最多 4 次跟随；canonical 请求修正 fragment 路由并丢弃无关查询。新增 3 个离线测试覆盖路径混淆、官方路径变体和重定向边界。此处仍是可访问性检查，不是完整页面 reader；现有响应前缀和超时限制不作为完整性保证。酷狗/汽水仍仅识别，不新增网络抓取。
 
 README 最小修正为 Spotify/YouTube 官方连接与公开 URL 优先，文件或 Takeout 为备用；真人读取验收、Apple CONFIG REQUIRED / NOT REAL VERIFIED、Last.fm 状态均保持。未使用 Cookie、私有接口、逆向或虚构曲目；未修改既有 OAuth、推荐、Agent、Compare、Copy 和前端布局。
 
-最终全量回归：Rust 139 passed / 0 failed / 1 ignored，fmt/check/release locked build 全通过；前端 lint/build 全通过，E2E 16/16 PASS。未放宽断言或 timeout。建议仅以 URL 校验与真实能力文档收尾范围由用户手动合并，不能描述为新增四平台曲目导入。
+最终全量回归：Rust 140 passed / 0 failed / 1 ignored，fmt/release locked build 全通过；前端 lint/build 全通过，E2E 16/16 PASS。未放宽断言或 timeout。建议仅以 URL 校验与真实能力文档收尾范围由用户手动合并，不能描述为新增四平台曲目导入。

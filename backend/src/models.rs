@@ -758,7 +758,7 @@ pub struct PlaylistImportRow {
     pub playlist_id: String,
     pub playlist_name: Option<String>,
     pub track_title: Option<String>,
-    pub artist: Vec<String>,
+    pub artist: Option<Vec<String>>,
     pub duration_ms: Option<u32>,
     pub source_url: Option<String>,
     pub availability: String,

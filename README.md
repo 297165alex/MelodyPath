@@ -85,7 +85,7 @@ npm run dev
 
 请以前端启动日志实际输出的 Local 地址，或 `start-melodypath.ps1` 最终输出的 Frontend 地址为准。
 
-Windows 推荐在安装前端依赖后，在项目根目录一次启动前后端：
+Windows 推荐在项目根目录一次启动前后端。首次运行会在缺少前端依赖时自动执行锁定依赖安装，之后直接复用；无需分别运行 `cargo run` 和 `npm run dev`：
 
 ```powershell
 .\start-melodypath.ps1
@@ -163,17 +163,15 @@ Spotify / YouTube 优先使用官方连接或公开 URL；文件和文本是备�
 
 ### 网易云音乐 / QQ音乐 / 酷狗音乐 / 汽水音乐 / 其他平台
 
-由于不同平台开放接口不同，目前 MelodyPath 不要求用户登录这些平台。
+由于不同平台开放接口不同，目前 MelodyPath 不要求用户登录这些平台，也不需要用户提供账号密码或 Cookie。
 
 推荐方式：
-- 导出歌单文件；
-- 或复制歌曲列表；
-- 或整理为：
 
-歌手 - 歌名
+1. 复制平台生成的公开歌单链接，粘贴到 **Public Playlist Link** 区域进行检测；
+2. 如果平台当前允许完整且合规地解析，MelodyPath 会显示真实 Import Preview；
+3. 如果页面只能识别或检查可访问性，请上传 CSV / TXT 等文件，或复制歌曲列表并按每行 `歌手 - 歌名` 粘贴。
 
-
-格式后上传。
+网易云支持识别 `https://y.music.163.com/m/playlist?id=...`、`https://music.163.com/playlist?id=...` 及 `playlist?id=...` 路由。公开页面可访问不等于完整曲目可导入；没有完整、稳定的公开数据时，能力保持 `ACCESSIBILITY_CHECK_ONLY`，不会生成虚假歌曲。
 
 
 ### 快速体验
@@ -449,6 +447,30 @@ MelodyPath 不会：
 
 `.env`、数据库、token 文件、私人歌单、构建目录和运行日志均不应提交到公开仓库。仓库中的 `.env.example` 只提供变量名，不包含真实凭据。
 
+# FAQ / Troubleshooting
+
+### 为什么不能直接连接网易云？
+
+由于平台开放能力限制，MelodyPath 不使用账号密码或 Cookie。目前支持网易云公开歌单链接识别与可访问性检测，以及文件导入和文本导入。只有公开页面提供完整、稳定且允许使用的数据时才会自动生成 Import Preview；否则请使用 CSV / TXT 或粘贴 `歌手 - 歌名`。
+
+### 为什么 Spotify 需要授权？
+
+Spotify 提供官方 OAuth 接口，因此 MelodyPath 可以在用户于 Spotify 官方页面明确授权后安全读取其有权访问的歌单。MelodyPath 不接收 Spotify 密码或 Cookie，平台数据也不会发送给 LLM。
+
+### 如何启动？
+
+Windows 用户 clone 仓库后，在项目根目录运行：
+
+```powershell
+.\start-melodypath.ps1
+```
+
+脚本会在首次需要时安装锁定的前端依赖，启动 frontend 与 backend，等待后端健康检查通过，然后输出可打开的 Frontend 地址。请先安装 Prerequisites 中列出的 Rust、Node.js 和 npm。
+
+### 如何配置 Developer Credentials？
+
+普通用户使用已经部署好的 MelodyPath 时无需申请 Developer Credentials。自行部署且需要真实 Spotify、YouTube、Apple Music 或 Last.fm 能力时，由部署者在平台官方控制台创建应用，把 README“配置 Endpoint / Key”中列出的变量设置在后端运行环境，并登记完全一致的 OAuth Redirect URI。凭据不得输入前端、写入 README、提交 Git 或输出到日志；修改后需重启后端。
+
 # Testing
 
 最近一次最终审计记录（2026-09-08）：
@@ -457,7 +479,7 @@ MelodyPath 不会：
 |---|---|
 | `cargo fmt --all --check` | PASS |
 | `cargo check --workspace` | PASS |
-| `cargo test --workspace` | **139 PASS / 0 FAIL / 1 ignored（显式联网探测）** |
+| `cargo test --workspace` | **140 PASS / 0 FAIL / 1 ignored（显式联网探测）** |
 | `cargo build --release --locked` | PASS |
 | `npm --prefix frontend run lint` | PASS |
 | `npm --prefix frontend run build` | PASS |

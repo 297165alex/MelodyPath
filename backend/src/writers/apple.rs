@@ -272,7 +272,7 @@ fn append_row(
         playlist_id: playlist_id.into(),
         playlist_name: result.name.clone(),
         track_title: title.clone(),
-        artist: artists.clone(),
+        artist: (!artists.is_empty()).then(|| artists.clone()),
         duration_ms,
         source_url: source_url.clone(),
         availability: availability.into(),
@@ -521,6 +521,7 @@ mod tests {
         assert_eq!(result.tracks.len(), 2);
         assert_eq!(result.rows[1].import_status, "SKIPPED_DUPLICATE");
         assert_eq!(result.rows[2].import_status, "SKIPPED_MISSING_ARTIST");
+        assert!(result.rows[2].artist.is_none());
         assert_eq!(result.rows[3].availability, "UNAVAILABLE");
         assert_eq!(result.rows[5].availability, "UNKNOWN");
         let transfer = crate::models::TransferTrack::from(&result.tracks[0]);
