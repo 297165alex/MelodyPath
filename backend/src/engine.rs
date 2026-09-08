@@ -487,6 +487,7 @@ pub fn build_personal_demo(playlist: Playlist) -> PersonalDemo {
         },
         import_summary: None,
         unmatched_tracks: Vec::new(),
+        metadata_resolutions: Vec::new(),
     }
 }
 

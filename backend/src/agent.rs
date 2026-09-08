@@ -1756,6 +1756,7 @@ mod tests {
             },
             import_summary: None,
             unmatched_tracks: Vec::new(),
+            metadata_resolutions: Vec::new(),
         }
     }
 

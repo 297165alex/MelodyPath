@@ -83,6 +83,15 @@ pub struct ImportAnalysisSummary {
     pub energy_coverage: f32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetadataResolutionSummary {
+    pub track_id: String,
+    pub original_input: String,
+    pub status: String,
+    pub source: Option<String>,
+    pub match_confidence: f32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum VersionType {
@@ -308,6 +317,8 @@ pub struct PersonalDemo {
     pub import_summary: Option<ImportAnalysisSummary>,
     #[serde(default)]
     pub unmatched_tracks: Vec<ImportedTrack>,
+    #[serde(default)]
+    pub metadata_resolutions: Vec<MetadataResolutionSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -31,13 +31,15 @@ Rust Agent Loop     Deterministic Music Engine              PlaylistWriter
 
 ## 数据与可信度
 
-统一 `Track` 保留标题、标准标题、歌手、专辑、Genre、年代、语言、时长、来源、外部 ID、版本、情绪、能量、流行度和元数据置信度。手动文本只提供歌手/歌名，因此不会虚构 Genre；Demo 元数据在所有相关页面标注为离线模拟。
+统一 `Track` 保留标题、标准标题、歌手、专辑、Genre、年代、语言、时长、来源平台、外部 ID、版本、情绪、能量、流行度和元数据置信度。文件或手动文本先进入 `resolver::MetadataResolver`；当前优先使用 MusicBrainz 公开 API，并把 `HIGH_MATCH / MEDIUM_MATCH / UNMATCHED`、来源和匹配置信度作为分析响应中的 resolution summary。失败时原始标题和歌手继续分析，不虚构字段。完整边界见 [metadata_layer.md](metadata_layer.md)。
 
 ## PlaylistWriter
 
 trait 包含 `authorize`、`search_track`、`create_playlist`、`add_tracks` 和 `get_playlist_url`。预览端点仅检索，不执行账号修改；执行端点要求一次性 `preview_id` 和 `confirmed=true`，因此旧预览不能重复写入。默认创建新歌单。
 
 Spotify 匹配优先 ISRC；回退时组合歌名、歌手、专辑、时长和版本分数，识别 Live、Remix、Remastered、Acoustic、Cover 与 Instrumental。高置信度自动选，中置信度返回候选，低置信度失败。写入按 100 首分批并逐批记录失败。
+
+`export::spotify_playlist` 是标准 Track 到 Spotify 搜索的编排层，复用既有 OAuth connector，不改变 Spotify import。Analysis / Recommendation 的用户主动写回仍经过预览、歧义确认和新建私有列表闸门。
 
 `platforms.rs` 提供平台能力的服务端真相源，并对公开链接实施协议、官方域名和重定向白名单。Spotify 与 YouTube 返回细粒度 `data_use`：读取、归属展示、传输和写回可用，画像、衍生指标、跨平台比较、LLM 与训练不可用；官方数据路径只连接预览与 `PlaylistWriter`，不连接 Agent/LLM 分析路径。
 

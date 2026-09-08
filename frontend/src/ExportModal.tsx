@@ -17,7 +17,7 @@ const platformNames: Record<string, string> = {
 export default function ExportModal({ initialPlatform, tracks, sourceLabel, statuses, onClose }: Props) {
   const [platform, setPlatform] = useState(initialPlatform)
   const [selected, setSelected] = useState(() => new Set(tracks.map((track) => track.id)))
-  const [playlistName, setPlaylistName] = useState(`${sourceLabel} · MelodyPath`)
+  const [playlistName, setPlaylistName] = useState(initialPlatform === 'spotify' ? 'MelodyPath Generated Playlist' : `${sourceLabel} · MelodyPath`)
   const [format, setFormat] = useState('csv')
   const [preview, setPreview] = useState<ExportPreview | null>(null)
   const [result, setResult] = useState<ExportResult | null>(null)
@@ -91,7 +91,7 @@ export default function ExportModal({ initialPlatform, tracks, sourceLabel, stat
           {preview.matches.map((match) => <div className={`match-row ${match.status}`} key={match.source_track.id}>
             <div className="match-title"><strong>{match.source_track.title}</strong><span>{match.source_track.artists.join(', ')}</span></div>
             <div className="confidence"><b>{Math.round(match.confidence * 100)}%</b><span>{match.match_reason}</span></div>
-            <span className="match-status">{match.status === 'matched' ? '已匹配' : match.status === 'needs_confirmation' ? '请选择版本' : '无法匹配'}</span>
+            <span className="match-status">{match.status === 'matched' ? '已匹配' : match.status === 'needs_confirmation' ? '请选择版本' : '无法匹配'} · Source: {match.target_platform === 'spotify' ? 'Spotify' : platformNames[match.target_platform] ?? match.target_platform}</span>
             {match.status === 'needs_confirmation' && <select value={selections[match.source_track.id] ?? ''} onChange={(event) => setSelections({ ...selections, [match.source_track.id]: event.target.value })}>
               <option value="">暂不写入，保留待确认</option>
               {match.candidates.filter((candidate) => candidate.available_in_market).map((candidate) => <option value={candidate.target_track_id} key={candidate.target_track_id}>{candidate.title} — {candidate.artists.join(', ')} · {Math.round(candidate.confidence * 100)}% · {candidate.version_type}</option>)}

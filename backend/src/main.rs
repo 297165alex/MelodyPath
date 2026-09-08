@@ -2,6 +2,7 @@ mod agent;
 mod alternate;
 mod demo;
 mod engine;
+mod export;
 mod genre;
 mod identity;
 mod import;
@@ -10,6 +11,7 @@ mod models;
 mod normalize;
 mod platforms;
 mod recommendation;
+mod resolver;
 mod secure_store;
 mod transfer;
 mod writers;
@@ -1749,15 +1751,23 @@ async fn export_preview(
         ));
     }
 
-    let mut matches = Vec::with_capacity(request.tracks.len());
-    for track in &request.tracks {
-        matches.push(
-            writer
-                .search_track(track, session.as_deref())
-                .await
-                .map_err(ApiError::internal)?,
-        );
-    }
+    let matches = if request.platform == "spotify" {
+        export::spotify_playlist::SpotifyPlaylistExportService::new(writer.as_ref())
+            .match_tracks(&request.tracks, session.as_deref())
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        let mut matches = Vec::with_capacity(request.tracks.len());
+        for track in &request.tracks {
+            matches.push(
+                writer
+                    .search_track(track, session.as_deref())
+                    .await
+                    .map_err(ApiError::internal)?,
+            );
+        }
+        matches
+    };
     let auto_matched_count = matches
         .iter()
         .filter(|m| m.status == MatchStatus::Matched)

@@ -285,6 +285,8 @@ Spotify / YouTube 优先使用官方连接或公开 URL；文件和文本是备�
 - M3U / M3U8
 - 手动批量输入
 
+文件或文本解析后会优先进入平台无关的 MusicBrainz Metadata Resolver。它通过无需用户账号或 API key 的公开后端 API 查询 recording，并以标题、艺人及可用时长进行确定性评分；结果标记为 `HIGH_MATCH`、`MEDIUM_MATCH` 或 `UNMATCHED`。匹配成功时统一 Track 会保留 MusicBrainz recording ID、实际返回的专辑/时长及来源；API 失败、超时或低置信度时原始标题和歌手保持不变，导入与基础分析继续执行。MusicBrainz 官方服务要求有意义的 User-Agent，并限制平均每秒最多一次请求，本实现遵守该边界。
+
 CSV/TSV 使用 Rust `csv` 库解析，支持 UTF-8 BOM、引号和字段内逗号、中英文常见表头、多艺人、Genre、时长与真实 Energy 字段。文本中歌手与歌名顺序不明确时，预览页会要求用户确认，而不是直接猜测。
 
 分析结果包括：
@@ -440,6 +442,8 @@ SQLite + process-local session state
 关键实现位置：
 
 - `backend/src/import.rs`：统一文件与文本导入；
+- `backend/src/resolver/`：平台无关 Metadata Resolver 与 MusicBrainz adapter；
+- `backend/src/export/spotify_playlist.rs`：标准 Track 到 Spotify 的独立导出编排，复用既有 OAuth connector；
 - `backend/src/engine.rs`：音乐画像、比较指标和桥梁逻辑；
 - `backend/src/recommendation.rs`：Last.fm 候选、三区评分、过滤和遥测；
 - `backend/src/agent.rs`：结构化决策循环、工具执行、SSE、取消/恢复和历史；
@@ -531,13 +535,13 @@ Windows 用户 clone 仓库后，在项目根目录运行：
 |---|---|
 | `cargo fmt --all --check` | PASS |
 | `cargo check --workspace` | PASS |
-| `cargo test --workspace` | **140 PASS / 0 FAIL / 1 ignored（显式联网探测）** |
+| `cargo test --workspace` | **147 PASS / 0 FAIL / 1 ignored（显式联网探测）** |
 | `cargo build --release --locked` | PASS |
 | `npm --prefix frontend run lint` | PASS |
 | `npm --prefix frontend run build` | PASS |
 | `npm --prefix frontend run test:e2e` | **26/26 PASS（含 Import、Agent、首次引导及手机/平板导航回归）** |
 
-Rust 测试覆盖导入格式与大歌单、Genre/艺人/版本规范化、Energy 缺失、Last.fm Provider 降级、三区推荐、候选池换批、源歌单排除、Compare、结构化 AgentDecision、非法工具、动态下一步、步数/费用限制、真实 Analysis 绑定、Copy 分页与匹配、歧义确认、失败隔离、取消/恢复，以及 OAuth 安全边界。
+Rust 测试覆盖导入格式与大歌单、MusicBrainz 中英日韩/不存在歌曲解析、Spotify 标准 Track 搜索成功/未匹配/缺少授权、Genre/艺人/版本规范化、Energy 缺失、Last.fm Provider 降级、三区推荐、候选池换批、源歌单排除、Compare、结构化 AgentDecision、非法工具、动态下一步、步数/费用限制、真实 Analysis 绑定、Copy 分页与匹配、歧义确认、失败隔离、取消/恢复，以及 OAuth 安全边界。
 
 真实数据验证包括：
 

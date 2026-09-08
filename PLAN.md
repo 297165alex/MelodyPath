@@ -23,6 +23,7 @@
 11. 社交与版本探索（本地浏览器通过）：独立 `/compare`、Alternate Versions 及共用加入歌单确认流程。
 12. Copy MVP（代码与 Mock/浏览器验证完成，真实 OAuth 阻塞）：独立 `/transfer`、最多 5 个候选、确定性评分、歧义确认、私有目标、会话状态/SSE/取消/恢复、逐首结果与 CSV/JSON 报告。
 13. 持续验证：Rust 格式/检查/测试、前端 lint/build、HTTP 与浏览器回归、真实凭据手动验收。
+14. 平台无关 Metadata Layer（本轮完成）：MusicBrainz 优先解析、确定性匹配状态与原输入降级；标准 Track 可经独立 Spotify export service 使用既有 OAuth 搜索并在确认后新建私有歌单。
 
 ## 风险与边界
 

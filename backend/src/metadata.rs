@@ -2,13 +2,14 @@ use crate::{
     engine,
     genre::{canonicalize_genre, normalize_genres},
     models::{
-        DataState, ImportAnalysisSummary, ImportedTrack, MetadataStatus, PersonalDemo, Playlist,
-        Track,
+        DataState, ImportAnalysisSummary, ImportedTrack, MetadataResolutionSummary, MetadataStatus,
+        PersonalDemo, Playlist, Track,
     },
     normalize::{normalize_text, token_similarity},
     recommendation::{
         LastFmRecommendationProvider, RecommendationProvider, build_real_recommendations,
     },
+    resolver::{MetadataMatchStatus, MetadataResolver, MusicBrainzResolver, ResolutionOutcome},
 };
 use reqwest::Client;
 use serde::Deserialize;
@@ -25,6 +26,7 @@ pub struct MetadataService {
     storefront: String,
     max_tracks: usize,
     cache: Arc<RwLock<HashMap<String, Option<ItunesTrack>>>>,
+    resolver: Arc<dyn MetadataResolver>,
     recommendation_provider: Arc<dyn RecommendationProvider>,
 }
 
@@ -38,6 +40,7 @@ impl MetadataService {
         let storefront = std::env::var("ITUNES_STOREFRONT").unwrap_or_else(|_| "CN".into());
         let recommendation_provider =
             Arc::new(LastFmRecommendationProvider::from_env(client.clone()));
+        let resolver = Arc::new(MusicBrainzResolver::new(client.clone()));
         Self {
             client,
             storefront,
@@ -46,6 +49,7 @@ impl MetadataService {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(12),
             cache: Arc::new(RwLock::new(HashMap::new())),
+            resolver,
             recommendation_provider,
         }
     }
@@ -59,27 +63,46 @@ impl MetadataService {
         service
     }
 
-    /// 无需音乐平台账号：先匹配 Apple 公开目录，失败时使用本地艺术家知识库。
+    /// 无需音乐平台账号：优先匹配 MusicBrainz，失败时保留既有公开目录与本地画像降级。
     /// 网络不可用时也会返回基础统计，不会让整个分析失败。
     pub async fn analyze(&self, mut playlist: Playlist) -> PersonalDemo {
         let enrich_count = playlist.tracks.len().min(self.max_tracks);
+        let mut metadata_resolutions = Vec::with_capacity(playlist.tracks.len());
         for track in playlist.tracks.iter_mut().take(enrich_count) {
-            let matched =
-                match timeout(Duration::from_secs(8), self.lookup_itunes_cached(track)).await {
-                    Ok(Ok(Some(candidate))) => {
-                        apply_itunes_candidate(track, candidate);
-                        true
+            let original_input = format!("{} - {}", track.artists.join(", "), track.title);
+            let resolved = timeout(Duration::from_secs(9), self.resolver.resolve(track)).await;
+            let matched = match resolved {
+                Ok(Ok(outcome)) if outcome.status != MetadataMatchStatus::Unmatched => {
+                    *track = outcome.track.clone();
+                    metadata_resolutions.push(resolution_summary(track, &original_input, &outcome));
+                    true
+                }
+                _ => {
+                    match timeout(Duration::from_secs(8), self.lookup_itunes_cached(track)).await {
+                        Ok(Ok(Some(candidate))) => {
+                            apply_itunes_candidate(track, candidate);
+                            metadata_resolutions.push(catalog_resolution_summary(
+                                track,
+                                &original_input,
+                                "Apple Public Catalog",
+                            ));
+                            true
+                        }
+                        _ => false,
                     }
-                    _ => false,
-                };
+                }
+            };
             if !matched {
                 apply_local_artist_profile(track);
+                metadata_resolutions.push(unmatched_resolution_summary(track, &original_input));
             }
         }
 
         if playlist.tracks.len() > enrich_count {
             for track in playlist.tracks.iter_mut().skip(enrich_count) {
+                let original_input = format!("{} - {}", track.artists.join(", "), track.title);
                 apply_local_artist_profile(track);
+                metadata_resolutions.push(unmatched_resolution_summary(track, &original_input));
             }
         }
 
@@ -96,6 +119,7 @@ impl MetadataService {
             recommendation_summary,
             import_summary: None,
             unmatched_tracks: Vec::new(),
+            metadata_resolutions,
         }
     }
 
@@ -108,25 +132,65 @@ impl MetadataService {
         mut imported: Vec<ImportedTrack>,
     ) -> PersonalDemo {
         let mut provider_requests = 0;
+        let mut resolved_tracks = Vec::with_capacity(imported.len());
+        let mut metadata_resolutions = Vec::with_capacity(imported.len());
         for imported_track in &mut imported {
+            let original_input = imported_track.original_row.clone();
+            let mut track = imported_to_track(imported_track);
             if imported_track.metadata_status == MetadataStatus::Complete {
+                metadata_resolutions.push(catalog_resolution_summary(
+                    &track,
+                    &original_input,
+                    "Imported metadata",
+                ));
+                resolved_tracks.push(track);
                 continue;
             }
             if provider_requests >= self.max_tracks {
                 mark_missing(imported_track, "超过本次联网补全上限，仍参与基础分析");
+                metadata_resolutions.push(unmatched_resolution_summary(&track, &original_input));
+                resolved_tracks.push(track);
                 continue;
             }
             provider_requests += 1;
-            let mut track = imported_to_track(imported_track);
+            let resolver_outcome =
+                timeout(Duration::from_secs(9), self.resolver.resolve(&track)).await;
+            if let Ok(Ok(outcome)) = resolver_outcome
+                && outcome.status != MetadataMatchStatus::Unmatched
+            {
+                track = outcome.track.clone();
+                apply_track_metadata(imported_track, &track);
+                metadata_resolutions.push(resolution_summary(&track, &original_input, &outcome));
+                resolved_tracks.push(track);
+                continue;
+            }
             match timeout(Duration::from_secs(8), self.lookup_itunes_cached(&track)).await {
                 Ok(Ok(Some(candidate))) => {
                     apply_itunes_candidate(&mut track, candidate);
                     apply_track_metadata(imported_track, &track);
+                    metadata_resolutions.push(catalog_resolution_summary(
+                        &track,
+                        &original_input,
+                        "Apple Public Catalog",
+                    ));
                 }
-                Ok(Ok(None)) => mark_missing(imported_track, "公开目录暂未匹配到该歌曲"),
-                Ok(Err(_)) => mark_missing(imported_track, "元数据查询失败，已保留原始歌曲"),
-                Err(_) => mark_missing(imported_track, "元数据查询超时，已保留原始歌曲"),
+                Ok(Ok(None)) => {
+                    mark_missing(imported_track, "MusicBrainz 与公开目录暂未匹配到该歌曲");
+                    metadata_resolutions
+                        .push(unmatched_resolution_summary(&track, &original_input));
+                }
+                Ok(Err(_)) => {
+                    mark_missing(imported_track, "元数据查询失败，已保留原始歌曲");
+                    metadata_resolutions
+                        .push(unmatched_resolution_summary(&track, &original_input));
+                }
+                Err(_) => {
+                    mark_missing(imported_track, "元数据查询超时，已保留原始歌曲");
+                    metadata_resolutions
+                        .push(unmatched_resolution_summary(&track, &original_input));
+                }
             }
+            resolved_tracks.push(track);
             sleep(Duration::from_millis(40)).await;
         }
 
@@ -136,7 +200,7 @@ impl MetadataService {
             owner_label: "当前用户".into(),
             source: source_label.clone(),
             is_demo: false,
-            tracks: imported.iter().map(imported_to_track).collect(),
+            tracks: resolved_tracks,
         };
         let report = engine::analyze_playlist(&playlist);
         let (recommendations, recommendation_summary, route) =
@@ -178,6 +242,7 @@ impl MetadataService {
                 energy_coverage: report.energy_coverage,
             }),
             unmatched_tracks,
+            metadata_resolutions,
         }
     }
 
@@ -239,6 +304,49 @@ impl MetadataService {
         let result = self.lookup_itunes(source).await?;
         self.cache.write().await.insert(key, result.clone());
         Ok(result)
+    }
+}
+
+fn resolution_summary(
+    track: &Track,
+    original_input: &str,
+    outcome: &ResolutionOutcome,
+) -> MetadataResolutionSummary {
+    MetadataResolutionSummary {
+        track_id: track.id.clone(),
+        original_input: original_input.into(),
+        status: outcome.status.as_str().into(),
+        source: outcome.source.clone(),
+        match_confidence: outcome.match_confidence,
+    }
+}
+
+fn catalog_resolution_summary(
+    track: &Track,
+    original_input: &str,
+    source: &str,
+) -> MetadataResolutionSummary {
+    MetadataResolutionSummary {
+        track_id: track.id.clone(),
+        original_input: original_input.into(),
+        status: if track.metadata_confidence >= 0.88 {
+            "HIGH_MATCH"
+        } else {
+            "MEDIUM_MATCH"
+        }
+        .into(),
+        source: Some(source.into()),
+        match_confidence: track.metadata_confidence,
+    }
+}
+
+fn unmatched_resolution_summary(track: &Track, original_input: &str) -> MetadataResolutionSummary {
+    MetadataResolutionSummary {
+        track_id: track.id.clone(),
+        original_input: original_input.into(),
+        status: "UNMATCHED".into(),
+        source: None,
+        match_confidence: 0.0,
     }
 }
 

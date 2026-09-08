@@ -58,6 +58,14 @@ export interface ImportAnalysisSummary {
   energy_coverage: number
 }
 
+export interface MetadataResolutionSummary {
+  track_id: string
+  original_input: string
+  status: 'HIGH_MATCH' | 'MEDIUM_MATCH' | 'UNMATCHED'
+  source?: string
+  match_confidence: number
+}
+
 export interface Track {
   id: string
   title: string
@@ -170,7 +178,7 @@ export interface ComparisonReport {
   data_source: string
   saved_locally: boolean
 }
-export interface PersonalAnalysis { analysis_id: string; playlist: Playlist; report: TasteReport; recommendations: Recommendation[]; route: RouteStep[]; recommendation_summary: RecommendationSummary; import_summary?: ImportAnalysisSummary; unmatched_tracks: ImportedTrack[] }
+export interface PersonalAnalysis { analysis_id: string; playlist: Playlist; report: TasteReport; recommendations: Recommendation[]; route: RouteStep[]; recommendation_summary: RecommendationSummary; import_summary?: ImportAnalysisSummary; unmatched_tracks: ImportedTrack[]; metadata_resolutions: MetadataResolutionSummary[] }
 export interface DemoPayload {
   generated_at: string
   disclosure: string
