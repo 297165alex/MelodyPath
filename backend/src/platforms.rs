@@ -6,6 +6,7 @@ use reqwest::{Client, Url, redirect::Policy};
 use std::time::Duration;
 
 mod netease;
+mod netease_tracks;
 
 #[derive(Clone)]
 pub struct PlatformService {
@@ -95,7 +96,7 @@ impl PlatformService {
                 auth_supported: false,
                 playlist_read_supported: false,
                 playlist_write_supported: false,
-                public_link_import_supported: false,
+                public_link_import_supported: true,
                 file_import_supported: true,
                 compare_supported: true,
                 transfer_source_supported: true,
@@ -107,7 +108,7 @@ impl PlatformService {
                 playlist_read_for_recommendation: false,
                 alternate_version_search_supported: false,
                 status: "IMPORT_ONLY".into(),
-                reason: "没有可验证的官方用户歌单 OAuth；请上传导出文件或粘贴歌曲清单。".into(),
+                reason: "匿名公开 HTML 条件导入；不接入账号 OAuth，失败可使用文件/文本。".into(),
                 display_name: "网易云音乐".into(),
                 region: "中国平台".into(),
                 capability_status: "qualification_required".into(),
@@ -121,8 +122,8 @@ impl PlatformService {
                 configured: false,
                 official_docs_url: Some("https://developer.music.163.com/".into()),
                 action_kind: "paste_link".into(),
-                description: "可识别公开分享链接并检查页面是否可访问；没有已验证的通用网页歌单读取接口时不会抓取或冒充接通。".into(),
-                policy_notice: Some("官方开放平台需要申请 appId/密钥；本版本不接收账号密码或 Cookie。".into()),
+                description: "公开页面完整列出歌曲时尝试导入；详情查询最多 20 首 / 20 秒，未导入数量明确展示。列表不完整时保留可访问性检查。".into(),
+                policy_notice: Some("只读取公开 HTML 和 JSON-LD，不使用账号密码、Cookie、私有 API 或签名接口。".into()),
                 data_use: DataUseCapabilities::unavailable("当前没有可验证的普通网页官方歌单数据权限。"),
             },
             PlatformCapability {
@@ -385,6 +386,7 @@ impl PlatformService {
         let recognized = recognize_link(raw)?;
         let Some(link) = recognized else {
             return Ok(PlaylistLinkInspection {
+                import_preview: None,
                 import_rows: vec![],
                 capability: PublicLinkCapability::Unsupported,
                 url_valid: false,
@@ -431,6 +433,7 @@ impl PlatformService {
         let mut resolved_url = None;
         let mut structured_data_status = "not_available".to_string();
         let mut public_metadata = None;
+        let mut imported_page = None;
         let (publicly_accessible, access_status, message) = match response {
             Ok(mut response) if response.status().is_success() => {
                 let final_url = response.url().clone();
@@ -457,8 +460,23 @@ impl PlatformService {
                             ..Default::default()
                         }
                     } else {
-                        match read_public_page(&mut response, 512 * 1024).await {
-                            Some(body) => netease::extract(&body),
+                        match read_public_page(&mut response, 1024 * 1024).await {
+                            Some(body) => {
+                                let mut metadata = netease::extract(&body);
+                                if let Some(id) = link.playlist_id.as_deref() {
+                                    match netease_tracks::import(
+                                        &body,
+                                        id,
+                                        metadata.name.as_deref(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(imported) => imported_page = Some(imported),
+                                        Err(status) => metadata.status = status,
+                                    }
+                                }
+                                metadata
+                            }
                             None => netease::PublicMetadata {
                                 status: "public_page_incomplete_or_too_large",
                                 ..Default::default()
@@ -506,9 +524,28 @@ impl PlatformService {
             ),
         };
 
+        let (tracks, rows) = imported_page
+            .map(|p| (p.tracks, p.rows))
+            .unwrap_or_default();
+        let can_analyze = !tracks.is_empty();
+        let message = if !rows.is_empty() {
+            format!(
+                "NetEase playlist detected · Imported {} / {} tracks · 未导入 {} 首（详情不可用、请求上限或超时）；请核对逐项报告。",
+                tracks.len(),
+                rows.len(),
+                rows.len() - tracks.len()
+            )
+        } else {
+            message
+        };
         Ok(PlaylistLinkInspection {
-            import_rows: vec![],
-            capability: PublicLinkCapability::AccessibilityCheckOnly,
+            import_preview: None,
+            import_rows: rows,
+            capability: if can_analyze {
+                PublicLinkCapability::TrackImportAvailable
+            } else {
+                PublicLinkCapability::AccessibilityCheckOnly
+            },
             url_valid: true,
             playlist_id_valid: link.playlist_id.is_some(),
             platform: Some(link.platform.into()),
@@ -519,13 +556,20 @@ impl PlatformService {
             resolved_url,
             publicly_accessible,
             access_status,
-            structured_data_status,
+            structured_data_status: if can_analyze {
+                "public_html_tracks_imported".into()
+            } else {
+                structured_data_status
+            },
             playlist_name: public_metadata.as_ref().and_then(|m| m.name.clone()),
             track_count: public_metadata.as_ref().and_then(|m| m.declared_tracks),
-            preview_tracks: vec![],
-            can_analyze: false,
+            preview_tracks: tracks,
+            can_analyze,
             message,
-            next_step: if link.platform == "spotify" {
+            next_step: if can_analyze {
+                "核对 Import Preview 与未导入数量，确认后使用既有 MetadataResolver 和推荐流程。"
+                    .into()
+            } else if link.platform == "spotify" {
                 "请使用上方 Spotify 官方授权选择歌单；Spotify 数据只可用于合规传输与写回。".into()
             } else {
                 "如需立即分析，请在“更多导入方式”中直接粘贴歌曲清单；这是备用方式，不需要制作 JSON/CSV。".into()
@@ -765,6 +809,7 @@ fn numeric_id(id: &str) -> bool {
 fn recognition_result(link: &RecognizedLink) -> PlaylistLinkInspection {
     let auth = matches!(link.platform, "spotify" | "youtube_music") && link.playlist_id.is_some();
     PlaylistLinkInspection {
+        import_preview: None,
         import_rows: vec![],
         capability: if auth {
             PublicLinkCapability::AuthRequired
@@ -984,7 +1029,8 @@ mod tests {
             for platform in ["netease", "qq_music", "kugou", "qishui"] {
                 let item = items.iter().find(|p| p.platform == platform).unwrap();
                 assert_eq!(item.status, "FILE_IMPORT_AVAILABLE");
-                assert!(!item.auth_supported && !item.public_link_import_supported);
+                assert!(!item.auth_supported);
+                assert_eq!(item.public_link_import_supported, platform == "netease");
                 assert!(item.file_import_supported);
             }
         }

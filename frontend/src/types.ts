@@ -3,6 +3,7 @@ export type DataState = 'NONE' | 'REAL_FILE' | 'REAL_TEXT' | 'REAL_ACCOUNT' | 'R
 export type MetadataStatus = 'complete' | 'partial' | 'missing'
 
 export interface ImportedTrack {
+  source_url?: string
   title: string
   artists: string[]
   album?: string
@@ -30,7 +31,7 @@ export interface ImportPreview {
   id: string
   name: string
   file_name?: string
-  data_state: 'REAL_FILE' | 'REAL_TEXT'
+  data_state: 'REAL_FILE' | 'REAL_TEXT' | 'REAL_PUBLIC_LINK'
   source_label: string
   total_rows: number
   parsed_count: number
@@ -44,7 +45,7 @@ export interface ImportPreview {
 }
 
 export interface ImportAnalysisSummary {
-  data_state: 'REAL_FILE' | 'REAL_TEXT'
+  data_state: 'REAL_FILE' | 'REAL_TEXT' | 'REAL_PUBLIC_LINK'
   source_label: string
   input_count: number
   parsed_count: number
@@ -254,6 +255,7 @@ export interface ProviderConfigurationStatus {
 }
 export type PublicLinkCapability = 'UNSUPPORTED' | 'URL_RECOGNITION_ONLY' | 'ACCESSIBILITY_CHECK_ONLY' | 'PUBLIC_METADATA_AVAILABLE' | 'TRACK_IMPORT_AVAILABLE' | 'AUTH_REQUIRED' | 'CONFIG_REQUIRED'
 export interface PlaylistLinkInspection {
+  import_preview?: ImportPreview
   import_rows?: { source_platform: string; playlist_id: string; playlist_name?: string; track_title?: string; artist?: string[] | null; duration_ms?: number; source_url?: string; availability: string; import_status: string }[]
   capability: PublicLinkCapability
   url_valid: boolean

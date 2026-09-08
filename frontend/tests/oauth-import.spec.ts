@@ -150,6 +150,8 @@ test('Agent guide is visible before execution and explicit Demo keeps its data l
 
 // Isolated synthetic fixtures. These tests do not claim real OAuth or platform acceptance.
 async function setup(page: Page, youtubeConnected = false, youtubeError = false) {
+  // Keep isolated UI contracts independent of external font availability.
+  await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }))
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/youtube/me' && youtubeError) return route.fulfill({ status: 503, json: { error: 'Synthetic unavailable' } })
@@ -396,6 +398,42 @@ function importPreviewFixture(id: string) {
   }
 }
 
+test('NetEase partial import uses the existing preview and confirmed analysis flow', async ({ page }) => {
+  await setup(page)
+  let analyses = 0
+  const preview = { ...importPreviewFixture('netease-preview'), file_name: undefined,
+    name: 'Synthetic NetEase', source_label: '网易云公开歌单 · Imported 2 / 3 tracks', data_state: 'REAL_PUBLIC_LINK',
+    total_rows: 3, invalid_count: 1, questions: ['Imported 2 / 3 tracks · 未导入 1 首'],
+  }
+  await page.route('**/api/playlists/inspect-link', route => route.fulfill({ json: {
+    recognized: true, platform: 'netease', platform_label: '网易云音乐', capability: 'TRACK_IMPORT_AVAILABLE',
+    publicly_accessible: true, access_status: 'page_reachable', playlist_id_valid: true,
+    playlist_name: 'Synthetic NetEase', track_count: 3, preview_tracks: [{ title: '晴天', artists: ['周杰伦'] }, { title: 'Blueming', artists: ['IU'] }],
+    can_analyze: true, message: 'Imported 2 / 3 tracks · 未导入 1 首', next_step: '核对预览后分析', import_preview: preview,
+    import_rows: [{ track_title: 'Unavailable', source_platform: 'netease', import_status: 'SKIPPED_DETAIL_UNAVAILABLE', availability: 'UNKNOWN' }],
+  } }))
+  await page.route('**/api/imports/netease-preview/analyze', route => {
+    analyses++
+    return route.fulfill({ json: analysisWithoutLastFmFixture() })
+  })
+  await page.goto('/')
+  await page.locator('#playlist-link').fill('https://y.music.163.com/m/playlist?id=123')
+  await page.getByRole('button', { name: '检查链接读取能力' }).click()
+  await expect(page.locator('.link-result')).toContainText('NetEase playlist detected')
+  await expect(page.locator('.link-result')).toContainText('Tracks imported: 2')
+  await expect(page.locator('.import-preview')).toContainText('Imported 2 / 3 tracks')
+  await expect(page.locator('.import-preview')).toContainText('REAL_PUBLIC_LINK')
+  await page.locator('.link-result summary').click()
+  await expect(page.locator('.link-result')).toContainText('详情不可用或缺少艺人，未导入')
+  await expect(page.getByRole('button', { name: '确认并进入 Copy Playlist 预览' })).toHaveCount(0)
+  expect(analyses).toBe(0)
+  await page.getByRole('button', { name: '确认并分析真实数据' }).click()
+  await expect(page.getByRole('heading', { name: 'Synthetic CSV', exact: true })).toBeVisible()
+  expect(analyses).toBe(1)
+  await page.getByRole('button', { name: '探索推荐', exact: true }).click()
+  await expect(page.locator('.lastfm-readiness')).toContainText('Last.fm Recommendation Service Not Configured')
+})
+
 function analysisWithoutLastFmFixture() {
   const track = { id: 'track-1', title: '晴天', normalized_title: '晴天', artists: ['周杰伦'], genres: [], platform: 'local', external_ids: {}, version_type: 'ORIGINAL', mood_tags: [], metadata_confidence: 0 }
   const queryStats = {
@@ -444,5 +482,7 @@ test('all seven cards disclose credentials and separate real acceptance from fil
   }
   await expect(page.locator('#connection-panel')).toContainText('自行部署')
   await expect(page.locator('#connection-panel')).toContainText('不要求用户提供账号密码或 Cookie')
-  await expect(page.locator('#public-link-panel')).toContainText('中国音乐平台：支持公开链接检测与文件/文本导入，不需要账号密码')
+  await expect(page.locator('#public-link-panel')).toContainText('网易云：公开页面完整列出歌曲时可尝试导入')
+  await expect(page.locator('#public-link-panel')).toContainText('详情查询最多 20 首 / 20 秒')
+  await expect(page.locator('#public-link-panel')).toContainText('不需要账号密码或 Cookie')
 })

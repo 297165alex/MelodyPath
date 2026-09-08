@@ -23,6 +23,8 @@ pub enum MetadataStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportedTrack {
+    #[serde(default)]
+    pub source_url: Option<String>,
     pub title: String,
     pub artists: Vec<String>,
     pub album: Option<String>,
@@ -728,6 +730,8 @@ pub struct PlaylistLinkRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaylistLinkInspection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_preview: Option<ImportPreview>,
     #[serde(default)]
     pub import_rows: Vec<PlaylistImportRow>,
     pub capability: PublicLinkCapability,

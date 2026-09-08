@@ -32,8 +32,8 @@ impl PublicMetadata {
                 "public_track_list_incomplete" => "公开歌曲列表不完整。",
                 "public_track_metadata_incomplete" => "歌曲缺少标题或艺人，不能转换为标准 Track。",
                 "public_track_count_unverified" => "无法验证歌曲列表完整性。",
-                "public_track_import_policy_unverified" =>
-                    "结构存在，但尚未核实适用于本项目的自动曲目导入许可。",
+                "public_track_metadata_available" =>
+                    "结构化元数据存在，需继续核对歌单身份与完整歌曲列表。",
                 _ => "没有可用的公开歌单结构化数据。",
             }
         )
@@ -108,7 +108,7 @@ pub(super) fn extract(body: &[u8]) -> PublicMetadata {
         }) {
             "public_track_metadata_incomplete"
         } else {
-            "public_track_import_policy_unverified"
+            "public_track_metadata_available"
         };
         return PublicMetadata {
             name: nonempty(&data["name"]).map(|s| s.chars().take(300).collect()),
@@ -155,12 +155,12 @@ mod tests {
     }
 
     #[test]
-    fn even_complete_structure_does_not_assert_platform_permission() {
+    fn complete_structure_reports_metadata_for_membership_validation() {
         let result = extract(&page(serde_json::json!({
             "@type":"MusicPlaylist", "numTracks":1,
             "track":[{"@type":"MusicRecording", "name":"Synthetic", "byArtist":{"name":"Synthetic artist"}}]
         })));
-        assert_eq!(result.status, "public_track_import_policy_unverified");
+        assert_eq!(result.status, "public_track_metadata_available");
     }
 
     #[test]

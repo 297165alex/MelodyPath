@@ -59,6 +59,63 @@ pub struct StoredImport {
 }
 
 impl StoredImport {
+    /// Server-created public metadata, never client-supplied platform API content.
+    pub fn from_netease(result: &crate::models::PlaylistLinkInspection) -> Option<Self> {
+        if result.platform.as_deref() != Some("netease")
+            || !result.can_analyze
+            || result.preview_tracks.is_empty()
+        {
+            return None;
+        }
+        let total = result.track_count?;
+        let tracks: Vec<_> = result
+            .preview_tracks
+            .iter()
+            .map(|track| ImportedTrack {
+                title: track.title.clone(),
+                artists: track.artists.clone(),
+                album: track.album.clone(),
+                release_date: None,
+                genres: vec![],
+                duration_ms: track.duration_ms,
+                energy_score: None,
+                source: "netease".into(),
+                source_url: track.platform_url.clone(),
+                original_row: format!("{} - {}", track.artists.join(" / "), track.title),
+                metadata_status: MetadataStatus::Partial,
+                metadata_confidence: track.metadata_confidence,
+                warnings: vec![],
+            })
+            .collect();
+        Some(Self {
+            id: Uuid::new_v4().to_string(),
+            name: result
+                .playlist_name
+                .clone()
+                .unwrap_or_else(|| "网易云公开歌单".into()),
+            file_name: None,
+            data_state: DataState::RealPublicLink,
+            source_label: format!(
+                "网易云公开歌单 · Imported {} / {} tracks",
+                tracks.len(),
+                total
+            ),
+            total_rows: total,
+            invalid_count: total.saturating_sub(tracks.len()),
+            detected_fields: vec![
+                "title".into(),
+                "artist".into(),
+                "album".into(),
+                "duration_ms".into(),
+                "source_platform".into(),
+                "source_url".into(),
+            ],
+            requires_column_confirmation: false,
+            text_order: "artist_title".into(),
+            questions: vec![result.message.clone()],
+            tracks,
+        })
+    }
     pub fn preview(&self) -> ImportPreview {
         ImportPreview {
             id: self.id.clone(),
@@ -527,6 +584,7 @@ fn imported_track(
         MetadataStatus::Missing
     };
     ImportedTrack {
+        source_url: None,
         title,
         artists,
         album,

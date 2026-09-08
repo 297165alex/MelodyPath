@@ -122,7 +122,8 @@ Windows 推荐在项目根目录一次启动前后端。首次运行会在缺少
 - **Spotify**：连接 Spotify 或粘贴公开 Playlist URL；通过官方 OAuth 授权后读取真实歌单并预览。
 - **YouTube / YouTube Music**：连接 YouTube Music 或粘贴公开 Playlist URL；通过 Google 官方 OAuth 授权后读取真实歌单并预览。
 - **Apple Music**：官方公开目录 API 代码已实现，需部署者配置，尚未真人验收；可使用文件/文本导入。
-- **网易云 / QQ / 酷狗 / 汽水**：公开链接识别、相应可访问性检查及文件/文本导入，目前不能从链接完整导入曲目。
+- **网易云**：公开页面完整列出歌曲时可尝试导入，显示 Imported X / Y；详情补全最多 20 首 / 20 秒，确认预览后分析。列表不完整时保留可访问性检查。
+- **QQ / 酷狗 / 汽水**：保留现有链接检测与文件/文本导入。
 - **本地文件**：所有平台均可使用用户提供的文件或批量文本导入。
 
 普通用户无需提供账号密码或 Cookie，也无需申请部署者的开发者凭据。
@@ -180,11 +181,11 @@ Spotify / YouTube 优先使用官方连接或公开 URL；文件和文本是备�
 
 1. 上传 CSV / TXT / JSON / M3U 等支持的文件，或复制歌曲列表，按每行 `歌手 - 歌名` 粘贴；
 2. Rust 实际解析到歌曲后显示 Import Preview，核对后确认分析；
-3. 公开 URL 可用于检测：网易云 / QQ 为 `ACCESSIBILITY_CHECK_ONLY`，酷狗 / 汽水为 `URL_RECOGNITION_ONLY`，当前均不能通过链接导入完整歌曲。
+3. 网易云公开 URL 在完整成员列表可核验时尝试读取，成功曲目进入既有预览；列表不完整或全部详情失败时保留 `ACCESSIBILITY_CHECK_ONLY`。QQ、酷狗和汽水维持原有能力。
 
 网易云支持识别 `https://y.music.163.com/m/playlist?id=...`、`https://music.163.com/playlist?id=...` 及 `playlist?id=...` 路由。公开页面可访问不等于完整曲目可导入；没有完整、稳定的公开数据时，能力保持 `ACCESSIBILITY_CHECK_ONLY`，不会生成虚假歌曲。
 
-2026-09-08 公开页面解析补充：网易云匿名 HTML 中的 `MusicPlaylist` JSON-LD 可用于展示真实歌单名称和页面声明数量，并检查实际条目数及标题/艺人是否缺失。声明数量不是已导入数量。真实公开样本仍仅列出部分条目且缺艺人，因此不生成 Track，不调用 MetadataResolver 补猜，不进入推荐；文件/文本继续复用既有 Import Preview → MetadataResolver → Recommendation。详见 [网易云公开页面解析记录](docs/netease_public_playlist.md)。
+2026-09-08 公开页面解析补充：网易云使用公开 HTML 歌曲链接和 JSON-LD；完整成员列表可核验时，最多查询 20 个官方歌曲详情页，详情批次最多 20 秒。显示 Imported X / Y tracks 及逐项未导入原因，成功曲目进入既有 Import Preview → 用户确认 → MetadataResolver → Recommendation。成员不完整时不生成假歌曲。详见 [网易云公开页面解析记录](docs/netease_public_playlist.md)。
 
 
 ### 快速体验
@@ -404,7 +405,7 @@ Create a new private YouTube Playlist
 | Spotify | 官方 OAuth、账号歌单读取、公开歌单 URL 导入、文件/文本导入 | 代码已实现，最终真实写入未验收 | **Official API · REAL VERIFIED**（读取） |
 | YouTube / YouTube Music | 官方 OAuth、账号歌单读取、公开歌单 URL 导入、文件/文本导入 | 代码已实现，最终真实写入未验收 | **Official API · REAL VERIFIED**（读取） |
 | Apple Music | 公开目录歌单读取代码已实现；文件/文本导入可用；私人资料库未支持 | UNSUPPORTED | **Official API implemented · CONFIG REQUIRED · NOT REAL VERIFIED · Private library unsupported** |
-| NetEase / 网易云音乐 | 文件/文本导入、URL 识别、公开可访问性检查；不能读取完整歌单 API 曲目 | UNSUPPORTED | **FILE/TEXT IMPORT · URL recognition · accessibility check** |
+| NetEase / 网易云音乐 | 公开 HTML 条件导入、文件/文本；详情请求有上限、明确显示部分结果 | UNSUPPORTED | **PUBLIC HTML conditional import · 非官方 API** |
 | QQ Music / QQ音乐 | 文件/文本导入、URL 识别、公开可访问性检查；不能读取完整歌单 API 曲目 | UNSUPPORTED | **FILE/TEXT IMPORT · URL recognition · accessibility check** |
 | Kugou / 酷狗音乐 | 文件/文本导入、URL 识别 | UNSUPPORTED | **FILE/TEXT IMPORT · URL recognition** |
 | Qishui / 汽水音乐 | 文件/文本导入、URL 识别 | UNSUPPORTED | **FILE/TEXT IMPORT · URL recognition** |
@@ -414,7 +415,7 @@ Create a new private YouTube Playlist
 MelodyPath 不要求用户提供账号密码或 Cookie。公网 Demo 的普通用户无需 Developer Credentials；自行部署时，若需 Spotify / YouTube / Apple Music / Last.fm 的真实平台能力，由部署者在后端配置对应凭据。文件/文本导入无需开发者凭据，也不代表各平台都有统一官方导出格式。
 Last.fm 推荐 Provider 已使用五份真实歌单完成串行浏览器验收，状态为 **REAL VERIFIED**；Developer Key 由 MelodyPath 部署者配置，普通用户无需 Key，也无需登录 Last.fm。Spotify 与 YouTube / YouTube Music 的官方 OAuth、真实身份、用户歌单读取和 Playlist URL 导入均已由账号持有人完成真人验收，状态为 **REAL VERIFIED**。普通用户无需自己的 Developer credentials，只需在官方 OAuth 页面授权。
 
-完成对应平台官方 OAuth 后，Spotify 与 YouTube Playlist URL 可通过官方 API 读取真实曲目并生成 Import Preview。Apple Music 的公开目录 URL 读取代码已实现，但课程环境需配置且尚未真人验收；网易云、QQ、酷狗和汽水保留 URL 识别、相应可访问性检查与文件/文本导入；“可识别”或“页面可访问”不等于能够合法读取完整曲目。
+完成对应平台官方 OAuth 后，Spotify 与 YouTube Playlist URL 可通过官方 API 读取真实曲目并生成 Import Preview。Apple Music 的公开目录 URL 读取代码已实现，但课程环境需配置且尚未真人验收；网易云可在公开页面成员完整时尝试条件导入；QQ、酷狗和汽水保留 URL 识别、相应可访问性检查与文件/文本导入；“可识别”或“页面可访问”不等于能够合法读取完整曲目。
 
 # Architecture
 
@@ -501,7 +502,7 @@ MelodyPath 不会：
 
 ### 为什么不能直接连接网易云？
 
-由于平台开放能力限制，MelodyPath 不使用账号密码或 Cookie。目前支持网易云公开歌单链接识别与可访问性检测，以及文件导入和文本导入。当前无法通过官方接口读取完整歌曲列表，请上传 CSV / TXT / JSON / M3U 或粘贴 `歌手 - 歌名`。公开链接识别不等于歌曲读取，只有官方 API 返回真实歌曲数据后才生成链接 Import Preview；文件/文本则以实际解析结果生成预览。
+网易云不接入账号登录。匿名公开页面能完整列出歌曲 ID 时，使用公开 metadata 尝试导入，并显示成功/总数与未导入原因；确认预览后进入分析。页面只提供部分列表时保持 ACCESSIBILITY_CHECK_ONLY，可改用文件或文本。
 
 ### 为什么 Spotify 需要授权？
 
@@ -523,7 +524,7 @@ Windows 用户 clone 仓库后，在项目根目录运行：
 
 ### 链接显示“页面可访问”，为什么没有 Import Preview？
 
-链接识别、可访问性检查、歌曲读取是三个独立状态。网易云 / QQ 只做前两项，酷狗 / 汽水只识别链接。检查成功不会生成歌曲；请改用文件或文本。
+链接识别、可访问性检查、歌曲读取是三个独立状态。网易云还会检查成员列表完整性并有限补全详情；列表不完整或无有效曲目时没有预览。QQ 只做前两项，酷狗 / 汽水只识别链接。
 
 ### 页面无法连接后端、官方导入失败或旧预览失效怎么办？
 
@@ -569,7 +570,7 @@ Rust 测试覆盖导入格式与大歌单、MusicBrainz 中英日韩/不存在�
 - **真实 LLM 验收**：Controller、schema、预算和 fallback 已实现，但真实外部 LLM 决策环仍受配置阻塞。
 - **Version Radar**：页面和本地流程已实现，真实 YouTube 搜索与写入仍需 OAuth/API 配置。
 - **Copy 持久性**：run id、SSE、取消和恢复在单个后端进程内工作，尚不支持服务重启后的任务恢复。
-- **公开分享链接**：Spotify / YouTube 在官方授权后可通过官方 API 导入真实曲目；Apple Music 公开目录读取代码已实现，但当前需配置、尚未真人验收且私人资料库未支持；中国平台仅支持现有 URL 识别、相应可访问性检查和文件/文本导入。
+- **公开分享链接**：Spotify / YouTube 在官方授权后可通过官方 API 导入真实曲目；Apple Music 公开目录读取代码已实现，但当前需配置、尚未真人验收且私人资料库未支持；网易云支持公开 HTML 条件导入，其余中国平台保留 URL 识别、相应可访问性检查和文件/文本导入。
 - **公网部署**：同域部署参数和安全边界已准备，但尚无公开域名、HTTPS 证书、生产 Token Store 或公开验收地址。
 
 未来工作包括：

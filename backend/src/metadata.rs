@@ -366,8 +366,18 @@ fn imported_to_track(imported: &ImportedTrack) -> Track {
         language: None,
         duration_ms: imported.duration_ms,
         platform: imported.source.clone(),
-        platform_url: None,
-        external_ids: Default::default(),
+        platform_url: imported.source_url.clone(),
+        external_ids: imported
+            .source_url
+            .as_ref()
+            .map(|url| {
+                [
+                    ("source_platform".into(), imported.source.clone()),
+                    ("source_url".into(), url.clone()),
+                ]
+                .into()
+            })
+            .unwrap_or_default(),
         version_type: crate::normalize::detect_version(&imported.title),
         mood_tags: Vec::new(),
         energy_score: imported.energy_score,
@@ -701,6 +711,7 @@ mod tests {
 
     fn imported(title: &str, artist: &str) -> ImportedTrack {
         ImportedTrack {
+            source_url: None,
             title: title.into(),
             artists: vec![artist.into()],
             album: None,
@@ -735,6 +746,18 @@ mod tests {
         assert_eq!(result.playlist.tracks[0].title, "尚未发布到目录的新歌 XYZ");
         assert_eq!(result.unmatched_tracks.len(), 1);
         assert_eq!(result.import_summary.unwrap().analyzed_count, 1);
+    }
+
+    #[test]
+    fn public_import_provenance_survives_standard_track_conversion() {
+        let mut source = imported("Synthetic", "Artist");
+        source.source = "netease".into();
+        source.source_url = Some("https://music.163.com/song?id=123".into());
+        let track = imported_to_track(&source);
+        assert_eq!(track.platform, "netease");
+        assert_eq!(track.platform_url, source.source_url);
+        assert_eq!(track.external_ids["source_platform"], "netease");
+        assert_eq!(track.external_ids["source_url"], source.source_url.unwrap());
     }
 
     #[tokio::test]

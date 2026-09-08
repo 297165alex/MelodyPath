@@ -1192,6 +1192,15 @@ async fn inspect_playlist_link(
         .inspect_link(&request.url)
         .await
         .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    if let Some(stored) = import::StoredImport::from_netease(&result) {
+        result.import_preview = Some(stored.preview());
+        state
+            .imports
+            .write()
+            .await
+            .insert(stored.id.clone(), stored);
+        return Ok(Json(result));
+    }
     if result.platform.as_deref() == Some("apple_music") && result.playlist_id_valid {
         if !state.apple.is_configured() {
             result.capability = PublicLinkCapability::ConfigRequired;
@@ -2088,6 +2097,80 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    #[ignore = "Explicit public NetEase HTML and existing metadata/recommendation pipeline network acceptance"]
+    async fn netease_real_public_import_preview_and_analysis() {
+        let router = test_app().await;
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/playlists/inspect-link")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"url":"https://y.music.163.com/m/playlist?id=3778678"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let inspection: models::PlaylistLinkInspection = serde_json::from_slice(
+            &to_bytes(response.into_body(), 4 * 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(inspection.platform.as_deref(), Some("netease"));
+        assert!(inspection.can_analyze, "{}", inspection.message);
+        let preview = inspection.import_preview.unwrap();
+        assert_eq!(preview.data_state, models::DataState::RealPublicLink);
+        assert!(preview.parsed_count > 0 && preview.parsed_count <= 20);
+        assert_eq!(
+            preview.parsed_count + preview.invalid_count,
+            preview.total_rows
+        );
+        assert_eq!(inspection.import_rows.len(), preview.total_rows);
+        println!(
+            "Real public HTML: imported={}/{}; skipped={}",
+            preview.parsed_count, preview.total_rows, preview.invalid_count
+        );
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/imports/{}/analyze", preview.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result: serde_json::Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 8 * 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result["playlist"]["is_demo"], false);
+        assert_eq!(
+            result["playlist"]["tracks"].as_array().unwrap().len(),
+            preview.parsed_count
+        );
+        assert_eq!(
+            result["metadata_resolutions"].as_array().unwrap().len(),
+            preview.parsed_count
+        );
+        assert!(result["recommendation_summary"]["status"].is_string());
+        println!(
+            "Existing analysis: tracks={}; resolver outcomes={}; recommendation status={}",
+            preview.parsed_count,
+            result["metadata_resolutions"].as_array().unwrap().len(),
+            result["recommendation_summary"]["status"]
+        );
     }
 
     #[tokio::test]
