@@ -106,6 +106,18 @@ Windows 推荐在安装前端依赖后，在项目根目录一次启动前后端
 
 
 
+### 最快使用方式
+
+如果使用部署者已配置好的 MelodyPath：
+
+- **Spotify**：连接 Spotify 或粘贴公开 Playlist URL；通过官方 OAuth 授权后读取真实歌单并预览。
+- **YouTube / YouTube Music**：连接 YouTube Music 或粘贴公开 Playlist URL；通过 Google 官方 OAuth 授权后读取真实歌单并预览。
+- **Apple Music**：官方公开目录 API 代码已实现，需部署者配置，尚未真人验收；可使用文件/文本导入。
+- **网易云 / QQ / 酷狗 / 汽水**：公开链接识别、相应可访问性检查及文件/文本导入，目前不能从链接完整导入曲目。
+- **本地文件**：所有平台均可使用用户提供的文件或批量文本导入。
+
+普通用户无需提供账号密码或 Cookie，也无需申请部署者的开发者凭据。
+
 ## 3. 上传歌单
 
 > Spotify 与 YouTube / YouTube Music 已支持官方 OAuth 连接。授权后可选择账号内歌单，也可粘贴 Spotify 或 YouTube Playlist URL，通过官方 API 读取真实曲目并生成 Import Preview。Apple Music 公开目录 API 代码已实现，当前需部署者配置且尚未真人验收；中国平台未核实到本项目可使用的通用官方歌单读取接口，均可使用文件或文本导入。
@@ -120,20 +132,18 @@ Windows 推荐在安装前端依赖后，在项目根目录一次启动前后端
 
 文件或文本会先进入导入预览。页面展示总行数、成功解析数、警告、无法解析行、检测字段和前 20 首歌曲；用户确认后才开始分析。无法匹配元数据的歌曲仍保留原始歌名和歌手，并继续参与不依赖 Genre 的基础统计。
 
-### 如何获得歌单文件？
+### 各平台推荐入口与文件备用方式
 
-如果你的音乐歌单来自其他平台，可以通过平台合法导出功能、第三方合法导出工具，或整理为 `歌手 - 歌名` 后导入。以下方式不代表 MelodyPath 已支持直接登录这些平台；不要使用 Cookie、模拟登录、逆向接口或私有 API 绕过限制。
+Spotify / YouTube 优先使用官方连接或公开 URL；文件和文本是备用方式。其他平台可通过合法导出功能或整理为 `歌手 - 歌名` 后导入。不要使用 Cookie、模拟登录、逆向接口或私有 API 绕过限制。
 
 ### Spotify
 
-推荐方式：
-1. 使用支持 Spotify Playlist Export 的工具导出歌单；
-2. 保存为 CSV 或 TXT；
-3. 上传到 MelodyPath。
+状态：**Official API · REAL VERIFIED**（账号与曲目读取）。
 
-导出的文件至少包含：
-Artist - Track Name
-即可进行分析。
+1. **推荐：Connect Spotify / 连接 Spotify** → 官方 OAuth 授权 → 选择账号中的真实歌单 → 直接生成 Import Preview。
+2. **公开链接**：粘贴 Spotify Playlist URL → 完成所需官方授权 → 通过官方 API 读取真实歌曲 → Import Preview。公开 URL 仍受账号访问权限限制。
+
+**Fallback**：不连接账号时，也可上传自行提供的 CSV / TXT / JSON 等文件，或粘贴歌曲文本。无需先导出文件才能使用官方连接。
 
 ### Apple Music
 
@@ -142,16 +152,14 @@ Artist - Track Name
 - 或使用第三方导出工具生成 CSV；
 - 再上传到 MelodyPath。
 
-### YouTube Music
+### YouTube / YouTube Music
 
-可通过：
-- Google Takeout
-- 第三方 Playlist Export 工具
+状态：**Official API · REAL VERIFIED**（账号与曲目读取）。
 
-获得歌曲列表后上传。
+1. **推荐：Connect YouTube Music / 连接 YouTube Music** → Google 官方 OAuth → 选择账号歌单 → Import Preview。
+2. **公开链接**：粘贴 YouTube Playlist URL → 完成所需官方授权 → 官方 API 读取真实歌曲 → Import Preview。
 
-支持格式：
-Artist - Track
+**Fallback**：不连接账号时，可使用 Google Takeout 导出的信息整理为支持的文件格式，或直接导入文件/文本。Google Takeout 不是使用官方连接的前置步骤。
 
 ### 网易云音乐 / QQ音乐 / 酷狗音乐 / 汽水音乐 / 其他平台
 
@@ -449,7 +457,7 @@ MelodyPath 不会：
 |---|---|
 | `cargo fmt --all --check` | PASS |
 | `cargo check --workspace` | PASS |
-| `cargo test --workspace` | **136 PASS / 0 FAIL / 1 ignored（显式联网探测）** |
+| `cargo test --workspace` | **139 PASS / 0 FAIL / 1 ignored（显式联网探测）** |
 | `cargo build --release --locked` | PASS |
 | `npm --prefix frontend run lint` | PASS |
 | `npm --prefix frontend run build` | PASS |

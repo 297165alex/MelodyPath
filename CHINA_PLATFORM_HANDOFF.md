@@ -15,7 +15,7 @@
 ## QQ音乐（本轮判断完成）
 
 - Login/API：本轮腾讯连连文档打开超时；历史官方资料为 IoT/H5 合作场景。QQ 音乐首页“开放平台”指向 artists 音乐人页面，不是通用用户歌单 OAuth 规范。用户歌单/公开歌单 API 授权、企业资格、商务、费用、普通开发者 credentials 均未取得本项目可用规范，不能据此接入。
-- Public URL：从官方首页实际歌单链接进入 `/n/ryqq_v2/playlist/7520364922`，网页读取只有导航框架；本机无 Cookie GET 返回四字“QQ音乐”，无 JSON-LD、歌曲链接或已知明文页面状态。旧 `/n/ryqq/playlist/7520364922` 返回 HTTP 200，同样只有“QQ音乐”。HTTP 200 不构成曲目读取成功。
+- Public URL：从官方首页实际歌单链接进入 `/n/ryqq_v2/playlist/7520364922`，网页读取只有导航框架；本机无 Cookie GET 返回“QQ音乐”，无 JSON-LD、歌曲链接或已知明文页面状态。旧 `/n/ryqq/playlist/7520364922` 返回 HTTP 200，同样只有“QQ音乐”。HTTP 200 不构成曲目读取成功。
 - implemented：不新增 parser；补强网易云/QQ 的精确歌单路径识别、HTTPS/精确域名、同平台重定向与跳数限制，使用 canonical URL 请求以正确处理 fragment 并移除无关查询；为官方 ryqq_v2 路径增加回归。
 - capability：ACCESSIBILITY_CHECK_ONLY + FILE_IMPORT_AVAILABLE；未升级；无真人曲目导入验收。
 - limitation：匿名响应可能随地区/环境变化，本轮结果不证明所有 QQ 页面永远不可读。不调用页面背后的私有接口。
@@ -31,13 +31,35 @@
 - 官方证据：[开放计划](https://open.kugou.com/docs/open-player/)、[官方首页](https://www.kugou.com/)、[首页歌单详情](https://www.kugou.com/songlist/gcid_3zq25x5kz17z038/)。
 - tests：沿用本轮 13/13 平台测试中的酷狗 URL 识别/不伪造曲目断言；没有新增 reader，因此分页、缺艺人等 parser 测试不适用。
 
-## 汽水音乐
+## 汽水音乐（本轮判断完成）
 
-本轮尚未审计；当前 URL_RECOGNITION_ONLY + FILE_IMPORT_AVAILABLE。
+- Login/API：已检查抖音官方 OpenAPI 列表，其中汽水条目为“首页推荐”“相关歌曲推荐”，不能据此认定支持第三方用户歌单登录或公开歌单读取。适用于歌单的企业资格、商务合作、费用及普通开发者 credentials 未核实，不接入推荐 API 充当歌单 reader。
+- Public URL：已检查官方产品页和 `qishui.douyin.com` 公开入口。匿名 HTML 为 9,505 字符产品页，无 JSON-LD，也没有发现 playlist/share/collection 链接；限定官方域名的一次公开歌单检索无结果。没有获得可核验的真实歌单短链接，未猜测 ID、未测试虚构重定向。
+- implemented / capability：不新增 parser 或短链解析；保持 URL_RECOGNITION_ONLY + FILE_IMPORT_AVAILABLE。
+- limitation：当前结论是缺少可验证的完整公开歌单样本，不是断言汽水不存在公开分享功能。无需继续搜索或登录。
+- 官方证据：[OpenAPI 列表](https://developer.open-douyin.com/docs/resource/zh-CN/dop/develop/openapi/list)、[产品页](https://www.douyin.com/qishui/)、[公开入口](https://qishui.douyin.com/)。这些检查已在本任务前续执行，恢复后没有重复研究。
+- tests：沿用平台回归中汽水识别、无虚假曲目与能力矩阵断言；没有 parser，分页/曲目字段/HTML parser 测试不适用。
 
 ## 测试、修改、提交与恢复
 
-- 当前修改：本交接文件、`backend/src/platforms.rs`。能力矩阵未升级，未改前端和其他平台 reader。
+- 本专项修改：`backend/src/platforms.rs` 的 URL 校验、本文、`docs/platform_capability_audit.md`、`README.md`。能力矩阵未升级，未改前端和其他平台 reader。README 仅修正 Quick Start 和 Spotify/YouTube 推荐顺序，官方连接/公开 URL 优先，文件/Takeout 为 fallback。
 - 本地 checkpoints：`72f15f0` 网易云证据；`914c502` QQ 证据和 URL 校验。后续提交用 `git log --oneline -- CHINA_PLATFORM_HANDOFF.md` 获取。
 - 真人验收：当前没有新 URL reader，因此没有可宣称 WAITING_FOR_PUBLIC_PLAYLIST_VERIFICATION 的已实现功能；不要求用户登录或提供凭据。
-- 下一步：完成汽水单轮公开入口核查，然后全量测试、同步能力审计和最终本地提交。若遇额度/上下文预警或研究停滞，停止研究，优先测试、更新本文并提交。
+- 恢复基线：`9ca8d8f`（Update China platform handoff checkpoint），工作区干净，分支核对通过。酷狗结论沿用已保存证据，汽水补记前续已完成检查，未重新搜索网易云/QQ。
+- 四平台结论已冻结：没有新增真实 public playlist track import。全量测试已通过，建议以 URL 校验修复和真实能力说明的范围手动合并；本轮不 push、不 merge。未来只有用户主动提供不同的真实公开歌单样本时才另行评估；本轮不要求真人验证不存在的 reader。
+
+## 最终测试与提交
+
+| 命令 | 结果 |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo check --workspace` | PASS |
+| `cargo test --workspace` | 139 passed / 0 failed / 1 ignored |
+| `cargo build --release --locked` | PASS（1m 52s） |
+| `npm --prefix frontend run lint` | PASS |
+| `npm --prefix frontend run build` | PASS |
+| `npm --prefix frontend run test:e2e` | 16/16 PASS（42.3s），正常退出 |
+
+Rust 保留既有 13 项编译警告；忽略项是既有显式联网探测。普通测试不依赖外网；未删除/放宽断言或增加 timeout。最终 `git diff --check` 通过。
+
+最终 checkpoint 标题：`Finalize China platform audit and prioritize official import paths`。精确 hash 用 `git log -1 --format=%H -- CHINA_PLATFORM_HANDOFF.md` 获取，避免文件自引用。提交后执行 `git status` 和提交日志核对工作区。任务到此停止，不等待凭据，不继续 API 研究。
