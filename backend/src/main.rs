@@ -1296,7 +1296,7 @@ async fn inspect_playlist_link(
                     playlist_id: id.to_owned(),
                     playlist_name: name.clone(),
                     track_title: Some(track.title.clone()),
-                    artist: track.artists.clone(),
+                    artist: (!track.artists.is_empty()).then(|| track.artists.clone()),
                     duration_ms: track.duration_ms,
                     source_url: track.platform_url.clone(),
                     availability: "UNKNOWN".into(),

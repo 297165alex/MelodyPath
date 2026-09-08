@@ -599,7 +599,10 @@ fn recognize_link(raw: &str) -> Result<Option<RecognizedLink>> {
         || host_matches(&host, "y.qq.com"))
         && (url.scheme() != "https"
             || url.port_or_known_default() != Some(443)
-            || !matches!(host.as_str(), "music.163.com" | "163cn.tv" | "y.qq.com"))
+            || !matches!(
+                host.as_str(),
+                "music.163.com" | "y.music.163.com" | "163cn.tv" | "y.qq.com"
+            ))
     {
         return Ok(None);
     }
@@ -610,14 +613,14 @@ fn recognize_link(raw: &str) -> Result<Option<RecognizedLink>> {
         .and_then(|f| Url::parse(&format!("https://{host}{f}")).ok());
     let route = effective.as_ref().unwrap_or(&url);
     if host_matches(&host, "music.163.com") || host_matches(&host, "163cn.tv") {
-        let playlist_id = query_value(route, &["id", "playlistId"]).filter(|id| {
-            host == "music.163.com"
-                && matches!(
-                    route.path().trim_end_matches('/'),
-                    "/playlist" | "/m/playlist"
-                )
-                && numeric_id(id)
-        });
+        let playlist_path = route.path().trim_end_matches('/');
+        let supported_playlist_route = match host.as_str() {
+            "music.163.com" => matches!(playlist_path, "/playlist" | "/m/playlist"),
+            "y.music.163.com" => playlist_path == "/m/playlist",
+            _ => false,
+        };
+        let playlist_id = query_value(route, &["id", "playlistId"])
+            .filter(|id| supported_playlist_route && numeric_id(id));
         return Ok(Some(RecognizedLink {
             platform: "netease",
             label: "网易云音乐",
@@ -768,6 +771,7 @@ mod tests {
         for raw in [
             "https://music.163.com/not-playlist?id=123456",
             "https://music.163.com/playlist/123456/song/789",
+            "https://y.music.163.com/playlist?id=123456",
             "https://y.qq.com/not-playlist/123456",
             "https://y.qq.com/n/ryqq/playlist/123456/song/789",
             "https://y.qq.com/n/ryqq/playlist/invalid?id=123456",
@@ -848,6 +852,16 @@ mod tests {
                 "netease",
                 Some("123456"),
             ),
+            (
+                "https://y.music.163.com/m/playlist?id=7736940069&userid=4899204022&creatorId=4899204022",
+                "netease",
+                Some("7736940069"),
+            ),
+            (
+                "https://y.music.163.com/m/playlist?id=7558013954&userid=4899204022&creatorId=1321948954",
+                "netease",
+                Some("7558013954"),
+            ),
             ("https://music.163.com/playlist?id=bad", "netease", None),
             ("https://163cn.tv/synthetic", "netease", None),
             (
@@ -869,6 +883,35 @@ mod tests {
             let link = recognize_link(url).unwrap().unwrap();
             assert_eq!(link.platform, platform);
             assert_eq!(link.playlist_id.as_deref(), id);
+        }
+    }
+
+    #[test]
+    fn netease_mobile_playlist_urls_canonicalize_without_fabricating_metadata() {
+        for (raw, id) in [
+            (
+                "https://y.music.163.com/m/playlist?id=7736940069&userid=4899204022&creatorId=4899204022",
+                "7736940069",
+            ),
+            (
+                "https://y.music.163.com/m/playlist?id=7558013954&userid=4899204022&creatorId=1321948954",
+                "7558013954",
+            ),
+        ] {
+            let link = recognize_link(raw).unwrap().unwrap();
+            assert_eq!(link.platform, "netease");
+            assert_eq!(link.playlist_id.as_deref(), Some(id));
+            assert_eq!(
+                link.normalized_url.as_deref(),
+                Some(format!("https://music.163.com/playlist?id={id}").as_str())
+            );
+
+            let preview = recognition_result(&link);
+            assert_eq!(preview.capability, PublicLinkCapability::UrlRecognitionOnly);
+            assert!(preview.playlist_name.is_none());
+            assert!(preview.track_count.is_none());
+            assert!(preview.preview_tracks.is_empty());
+            assert!(preview.import_rows.is_empty());
         }
     }
 
@@ -1031,6 +1074,7 @@ mod tests {
             "https://user:pass@open.spotify.com/playlist/test",
             "http://music.163.com:8080/playlist?id=123",
             "https://music.163.com.evil.example/playlist?id=123",
+            "https://unverified.music.163.com/m/playlist?id=123",
         ] {
             assert!(recognize_link(url).unwrap().is_none());
         }
