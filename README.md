@@ -122,7 +122,7 @@ Windows 推荐在项目根目录一次启动前后端。首次运行会在缺少
 - **Spotify**：连接 Spotify 或粘贴公开 Playlist URL；通过官方 OAuth 授权后读取真实歌单并预览。
 - **YouTube / YouTube Music**：连接 YouTube Music 或粘贴公开 Playlist URL；通过 Google 官方 OAuth 授权后读取真实歌单并预览。
 - **Apple Music**：官方公开目录 API 代码已实现，需部署者配置，尚未真人验收；可使用文件/文本导入。
-- **网易云**：公开页面完整列出歌曲时可尝试导入，显示 Imported X / Y；详情补全最多 20 首 / 20 秒，确认预览后分析。列表不完整时保留可访问性检查。
+- **网易云**：按公开页面可验证的歌曲范围尝试导入，最多 20 首 / 20 秒，显示实际导入数 / 页面声明总数；确认预览后进入既有分析。没有可用公开歌曲时保留可访问性检查。
 - **QQ / 酷狗 / 汽水**：保留现有链接检测与文件/文本导入。
 - **本地文件**：所有平台均可使用用户提供的文件或批量文本导入。
 
@@ -181,11 +181,11 @@ Spotify / YouTube 优先使用官方连接或公开 URL；文件和文本是备�
 
 1. 上传 CSV / TXT / JSON / M3U 等支持的文件，或复制歌曲列表，按每行 `歌手 - 歌名` 粘贴；
 2. Rust 实际解析到歌曲后显示 Import Preview，核对后确认分析；
-3. 网易云公开 URL 在完整成员列表可核验时尝试读取，成功曲目进入既有预览；列表不完整或全部详情失败时保留 `ACCESSIBILITY_CHECK_ONLY`。QQ、酷狗和汽水维持原有能力。
+3. 网易云公开 URL 对页面明确列出且可验证的歌曲尝试有限读取，成功曲目进入既有预览；没有可用公开歌曲或全部详情失败时保留 `ACCESSIBILITY_CHECK_ONLY`。QQ、酷狗和汽水维持原有能力。
 
-网易云支持识别 `https://y.music.163.com/m/playlist?id=...`、`https://music.163.com/playlist?id=...` 及 `playlist?id=...` 路由。公开页面可访问不等于完整曲目可导入；没有完整、稳定的公开数据时，能力保持 `ACCESSIBILITY_CHECK_ONLY`，不会生成虚假歌曲。
+网易云支持识别 `https://y.music.163.com/m/playlist?id=...`、`https://music.163.com/playlist?id=...` 及 `playlist?id=...` 路由。公开页面可访问不等于完整曲目可导入；解析器只导入公开页面明确列出且身份可验证的歌曲，不推断未公开成员，也不会生成虚假歌曲。
 
-2026-09-08 公开页面解析补充：网易云使用公开 HTML 歌曲链接和 JSON-LD；完整成员列表可核验时，最多查询 20 个官方歌曲详情页，详情批次最多 20 秒。显示 Imported X / Y tracks 及逐项未导入原因，成功曲目进入既有 Import Preview → 用户确认 → MetadataResolver → Recommendation。成员不完整时不生成假歌曲。详见 [网易云公开页面解析记录](docs/netease_public_playlist.md)。
+2026-09-08 公开页面解析补充：网易云使用公开 HTML 歌曲链接和 JSON-LD，最多处理前 20 个公开候选，官方歌曲详情补全批次最多 20 秒。显示实际导入数 / 页面声明总数及逐项失败原因，成功曲目进入既有 Import Preview → 用户确认 → MetadataResolver → Recommendation。页面没有可验证歌曲时保持 `ACCESSIBILITY_CHECK_ONLY`。详见 [网易云公开页面解析记录](docs/netease_public_playlist.md)。
 
 
 ### 快速体验
@@ -415,7 +415,7 @@ Create a new private YouTube Playlist
 MelodyPath 不要求用户提供账号密码或 Cookie。公网 Demo 的普通用户无需 Developer Credentials；自行部署时，若需 Spotify / YouTube / Apple Music / Last.fm 的真实平台能力，由部署者在后端配置对应凭据。文件/文本导入无需开发者凭据，也不代表各平台都有统一官方导出格式。
 Last.fm 推荐 Provider 已使用五份真实歌单完成串行浏览器验收，状态为 **REAL VERIFIED**；Developer Key 由 MelodyPath 部署者配置，普通用户无需 Key，也无需登录 Last.fm。Spotify 与 YouTube / YouTube Music 的官方 OAuth、真实身份、用户歌单读取和 Playlist URL 导入均已由账号持有人完成真人验收，状态为 **REAL VERIFIED**。普通用户无需自己的 Developer credentials，只需在官方 OAuth 页面授权。
 
-完成对应平台官方 OAuth 后，Spotify 与 YouTube Playlist URL 可通过官方 API 读取真实曲目并生成 Import Preview。Apple Music 的公开目录 URL 读取代码已实现，但课程环境需配置且尚未真人验收；网易云可在公开页面成员完整时尝试条件导入；QQ、酷狗和汽水保留 URL 识别、相应可访问性检查与文件/文本导入；“可识别”或“页面可访问”不等于能够合法读取完整曲目。
+完成对应平台官方 OAuth 后，Spotify 与 YouTube Playlist URL 可通过官方 API 读取真实曲目并生成 Import Preview。Apple Music 的公开目录 URL 读取代码已实现，但课程环境需配置且尚未真人验收；网易云按公开页面可验证范围尝试有限导入；QQ、酷狗和汽水保留 URL 识别、相应可访问性检查与文件/文本导入；“可识别”或“页面可访问”不等于能够读取完整曲目。
 
 # Architecture
 
@@ -502,7 +502,7 @@ MelodyPath 不会：
 
 ### 为什么不能直接连接网易云？
 
-网易云不接入账号登录。匿名公开页面能完整列出歌曲 ID 时，使用公开 metadata 尝试导入，并显示成功/总数与未导入原因；确认预览后进入分析。页面只提供部分列表时保持 ACCESSIBILITY_CHECK_ONLY，可改用文件或文本。
+网易云不接入账号登录。匿名公开页面明确列出歌曲 ID 且可由 JSON-LD 校验时，使用公开 metadata 尝试导入，最多 20 首，并显示实际成功数 / 页面声明总数与失败原因；确认预览后进入分析。没有可验证公开歌曲时保持 `ACCESSIBILITY_CHECK_ONLY`，可改用文件或文本。
 
 ### 为什么 Spotify 需要授权？
 

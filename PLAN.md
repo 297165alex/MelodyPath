@@ -24,14 +24,14 @@
 12. Copy MVP（代码与 Mock/浏览器验证完成，真实 OAuth 阻塞）：独立 `/transfer`、最多 5 个候选、确定性评分、歧义确认、私有目标、会话状态/SSE/取消/恢复、逐首结果与 CSV/JSON 报告。
 13. 持续验证：Rust 格式/检查/测试、前端 lint/build、HTTP 与浏览器回归、真实凭据手动验收。
 14. 平台无关 Metadata Layer（本轮完成）：MusicBrainz 优先解析、确定性匹配状态与原输入降级；标准 Track 可经独立 Spotify export service 使用既有 OAuth 搜索并在确认后新建私有歌单。
-15. 网易云公开页面条件导入（2026-09-08）：复用 URL 校验，完整成员列表经 HTML/JSON-LD 验证后有限查询官方歌曲页；显示 Imported X/Y，接入既有预览、确认、Resolver 与推荐。成员不完整时保留 ACCESSIBILITY_CHECK_ONLY。
+15. 网易云公开页面条件导入（2026-09-08）：复用 URL 校验，对 HTML 容器与 JSON-LD 一致的公开歌曲前缀有限查询官方歌曲页，最多 20 首；显示实际导入数 / 页面声明总数，接入既有预览、确认、Resolver 与推荐。没有可验证歌曲时保留 ACCESSIBILITY_CHECK_ONLY。
 
 ## 风险与边界
 
 - Spotify 真写入依赖用户自行创建应用并提供环境变量；无凭据时不影响 P0。
 - Spotify API 内容受 Developer Policy 限制，只用于用户主动发起的传输/写回，不进入画像、衍生指标或 LLM。
 - Apple Music 当前明确为 Import Only；网易云、QQ音乐、酷狗和酷我只展示 Import Only 或 Partnership Required。任何平台都不模拟登录或使用私有接口。
-- 公开页面可访问不等于曲目完整可读；网易云仅在成员完整可核验时生成实际成功曲目的预览，QQ 保留可访问性检查。
+- 公开页面可访问不等于曲目完整可读；网易云只为页面明确公开且可核验的歌曲生成预览，不补造未公开成员，QQ 保留可访问性检查。
 - 本地 OAuth token 通过 Windows DPAPI 用户范围保护；后端仅向浏览器发放不透明 HttpOnly session。生产环境必须为 `OAuthTokenStore` 注入托管密钥/KMS 实现。
 - 离线推荐和元数据是明确标注的 Demo 数据，不宣称为实时平台结果。
 - Transfer Mock 只验证本地流程；只有真实登录 Spotify 与 Google、确认预览并得到可访问的 YouTube 播放列表链接，才能标记真实迁移通过。

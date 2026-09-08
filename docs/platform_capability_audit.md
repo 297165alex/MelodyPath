@@ -1,6 +1,6 @@
 # Platform capability audit
 
-> 2026-09-08 最新网易云实现：完整公开成员列表可核验时，通过 HTML / JSON-LD 与有限官方歌曲详情读取生成真实预览，显示 Imported X/Y 并接入既有分析。成员不完整或全部详情不可用时仍为 ACCESSIBILITY_CHECK_ONLY。见 [当前实现与验收](netease_public_playlist.md)，下方保留历史口径。
+> 2026-09-08 最新网易云实现：公开页面列出的歌曲前缀经 HTML / JSON-LD 一致性校验后，通过有限官方歌曲详情读取生成真实预览，最多 20 首，显示实际导入数 / 页面声明总数并接入既有分析。没有可验证歌曲或全部详情不可用时仍为 ACCESSIBILITY_CHECK_ONLY。见 [当前实现与验收](netease_public_playlist.md)，下方保留历史口径。
 
 官方能力审计日期：2026-09-07；最终产品收尾：2026-09-08（未开展新 API 研究）。范围：`feature/more-platforms` 上的平台读取扩展；不扩大 Spotify/Google scope，不改变已有写入确认闸门。本报告取代旧文档中 Apple “只有 bootstrap” 的当前实现描述；旧的真人验收记录保留其原始日期与范围。
 

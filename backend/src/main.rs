@@ -2133,7 +2133,7 @@ mod tests {
             preview.parsed_count + preview.invalid_count,
             preview.total_rows
         );
-        assert_eq!(inspection.import_rows.len(), preview.total_rows);
+        assert!(!inspection.import_rows.is_empty() && inspection.import_rows.len() <= 20);
         println!(
             "Real public HTML: imported={}/{}; skipped={}",
             preview.parsed_count, preview.total_rows, preview.invalid_count

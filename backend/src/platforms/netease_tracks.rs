@@ -166,7 +166,7 @@ fn songs(body: &[u8], playlist_id: &str) -> Result<Vec<Song>, &'static str> {
         })
         .collect();
     if schema.len() == total && unique(&schema) {
-        return Ok(schema);
+        return Ok(schema.into_iter().take(MAX_DETAILS).collect());
     }
     let dom = Html::parse_document(html);
     let containers: Vec<_> = dom.select(&selector("#song-list-pre-cache")).collect();
@@ -193,14 +193,18 @@ fn songs(body: &[u8], playlist_id: &str) -> Result<Vec<Song>, &'static str> {
             .and_then(|s| s.track.clone());
         result.push(Song { id, title, track });
     }
-    // Cross-check the JSON-LD prefix against the same playlist's DOM ordering.
-    if result.len() != total
+    // The public page may expose only a prefix of a large playlist. Import that
+    // verifiable prefix only: both public structures must identify the same
+    // ordered songs, and the UI keeps the declared total visible.
+    if schema.is_empty()
+        || result.is_empty()
+        || result.len() > total
         || !unique(&result)
         || !schema.iter().zip(&result).all(|(a, b)| a.id == b.id)
     {
         return Err("public_track_list_incomplete");
     }
-    Ok(result)
+    Ok(result.into_iter().take(MAX_DETAILS).collect())
 }
 fn unique(songs: &[Song]) -> bool {
     songs.iter().map(|s| &s.id).collect::<HashSet<_>>().len() == songs.len()
@@ -326,9 +330,16 @@ mod tests {
         assert_eq!(result[1].id, "2");
     }
     #[test]
-    fn incomplete_duplicate_conflicting_identity_or_unsafe_urls_never_import() {
+    fn partial_public_prefix_is_importable_without_fabricating_hidden_members() {
+        let result = songs(page(1196, &[1, 2]).as_bytes(), "123").unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, "1");
+        assert_eq!(result[1].id, "2");
+    }
+
+    #[test]
+    fn duplicate_conflicting_identity_or_unsafe_urls_never_import() {
         for html in [
-            page(3, &[1, 2]),
             page(2, &[1, 1]),
             page(2, &[2, 1]),
             page(2, &[1, 2]).replace("track_playlist-123", "track_playlist-456"),
@@ -345,6 +356,15 @@ mod tests {
         ] {
             assert!(official_id(url, "/song").is_none());
         }
+    }
+
+    #[test]
+    fn public_candidates_are_capped_at_twenty_before_detail_requests() {
+        let ids: Vec<_> = (1..=30).collect();
+        let result = songs(page(30, &ids).as_bytes(), "123").unwrap();
+        assert_eq!(result.len(), 20);
+        assert_eq!(result.first().unwrap().id, "1");
+        assert_eq!(result.last().unwrap().id, "20");
     }
     #[test]
     fn inline_complete_json_ld_needs_no_detail_fetch_and_missing_optional_fields_stay_null() {

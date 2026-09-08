@@ -122,7 +122,7 @@ impl PlatformService {
                 configured: false,
                 official_docs_url: Some("https://developer.music.163.com/".into()),
                 action_kind: "paste_link".into(),
-                description: "公开页面完整列出歌曲时尝试导入；详情查询最多 20 首 / 20 秒，未导入数量明确展示。列表不完整时保留可访问性检查。".into(),
+                description: "公开页面列出可验证歌曲时尝试导入；最多导入 20 首并明确展示实际导入数与页面声明总数。没有可用公开歌曲时保留可访问性检查。".into(),
                 policy_notice: Some("只读取公开 HTML 和 JSON-LD，不使用账号密码、Cookie、私有 API 或签名接口。".into()),
                 data_use: DataUseCapabilities::unavailable("当前没有可验证的普通网页官方歌单数据权限。"),
             },
@@ -528,13 +528,25 @@ impl PlatformService {
             .map(|p| (p.tracks, p.rows))
             .unwrap_or_default();
         let can_analyze = !tracks.is_empty();
-        let message = if !rows.is_empty() {
+        let message = if !rows.is_empty() && !tracks.is_empty() {
+            let total = public_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.declared_tracks)
+                .unwrap_or(rows.len());
+            let limit = if total > 20 {
+                " 当前公开页面解析限制，仅导入前20首歌曲用于分析。"
+            } else {
+                ""
+            };
             format!(
-                "NetEase playlist detected · Imported {} / {} tracks · 未导入 {} 首（详情不可用、请求上限或超时）；请核对逐项报告。",
+                "网易云歌单解析成功。已导入{}/{}首歌曲；未导入{}首。{}请核对 Import Preview 与逐项报告。",
                 tracks.len(),
-                rows.len(),
-                rows.len() - tracks.len()
+                total,
+                total.saturating_sub(tracks.len()),
+                limit
             )
+        } else if link.platform == "netease" {
+            "检测到网易云歌单，但当前无法获取公开歌曲列表。请使用TXT/CSV备用导入。".into()
         } else {
             message
         };
@@ -1238,30 +1250,37 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Explicit anonymous network acceptance; public page availability may change"]
-    async fn netease_real_public_page_acceptance() {
+    async fn netease_real_partial_public_page_acceptance() {
         let result = PlatformService::new()
-            .inspect_link("https://y.music.163.com/m/playlist?id=7299150850")
+            .inspect_link("https://y.music.163.com/m/playlist?id=7736940069")
             .await
             .unwrap();
-        assert_eq!(result.playlist_id.as_deref(), Some("7299150850"));
+        assert_eq!(result.playlist_id.as_deref(), Some("7736940069"));
         assert_eq!(result.publicly_accessible, Some(true));
         assert!(
             result.playlist_name.is_some(),
             "No public metadata: {}",
             result.structured_data_status
         );
-        assert!(result.track_count.is_some());
+        assert_eq!(result.track_count, Some(1196));
         assert_eq!(
             result.capability,
-            PublicLinkCapability::AccessibilityCheckOnly
+            PublicLinkCapability::TrackImportAvailable
         );
-        assert!(result.preview_tracks.is_empty());
-        assert!(result.import_rows.is_empty());
-        assert!(!result.can_analyze);
+        assert!(!result.preview_tracks.is_empty() && result.preview_tracks.len() <= 20);
+        assert_eq!(result.import_rows.len(), result.preview_tracks.len());
+        assert!(result.can_analyze);
+        assert!(
+            result
+                .message
+                .contains("当前公开页面解析限制，仅导入前20首歌曲用于分析")
+        );
         // Aggregate public metadata only; never output raw pages or headers.
         println!(
-            "declared={:?}; status={}; imported=0",
-            result.track_count, result.structured_data_status
+            "declared={:?}; status={}; imported={}",
+            result.track_count,
+            result.structured_data_status,
+            result.preview_tracks.len()
         );
     }
 }

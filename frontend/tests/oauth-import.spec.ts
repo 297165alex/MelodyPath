@@ -84,7 +84,7 @@ for (const [platform, capability, access, accessible] of [
     await page.getByRole('button', { name: '检查链接读取能力' }).click()
     const result = page.locator('.link-result')
     await expect(result).toContainText('已识别公开歌单链接')
-    await expect(result).toContainText('当前无法通过官方接口读取完整歌曲列表')
+    await expect(result).toContainText(platform === 'netease' ? '检测到网易云歌单，但当前无法获取公开歌曲列表。请使用TXT/CSV备用导入。' : '当前无法通过官方接口读取完整歌曲列表')
     await expect(result).toContainText('CSV / TXT / JSON / M3U')
     await expect(result).toContainText('歌手 - 歌名')
     await expect(result).toContainText(accessible === true ? '页面可访问（不代表歌曲已读取）' : accessible === false ? '页面不可访问' : access === 'check_failed' ? '检查失败' : '未检查')
@@ -402,14 +402,14 @@ test('NetEase partial import uses the existing preview and confirmed analysis fl
   await setup(page)
   let analyses = 0
   const preview = { ...importPreviewFixture('netease-preview'), file_name: undefined,
-    name: 'Synthetic NetEase', source_label: '网易云公开歌单 · Imported 2 / 3 tracks', data_state: 'REAL_PUBLIC_LINK',
-    total_rows: 3, invalid_count: 1, questions: ['Imported 2 / 3 tracks · 未导入 1 首'],
+    name: 'Synthetic NetEase', source_label: '网易云公开歌单 · Imported 2 / 1196 tracks', data_state: 'REAL_PUBLIC_LINK',
+    total_rows: 1196, invalid_count: 1194, questions: ['Imported 2 / 1196 tracks · 未导入 1194 首'],
   }
   await page.route('**/api/playlists/inspect-link', route => route.fulfill({ json: {
     recognized: true, platform: 'netease', platform_label: '网易云音乐', capability: 'TRACK_IMPORT_AVAILABLE',
     publicly_accessible: true, access_status: 'page_reachable', playlist_id_valid: true,
-    playlist_name: 'Synthetic NetEase', track_count: 3, preview_tracks: [{ title: '晴天', artists: ['周杰伦'] }, { title: 'Blueming', artists: ['IU'] }],
-    can_analyze: true, message: 'Imported 2 / 3 tracks · 未导入 1 首', next_step: '核对预览后分析', import_preview: preview,
+    playlist_name: 'Synthetic NetEase', track_count: 1196, preview_tracks: [{ title: '晴天', artists: ['周杰伦'] }, { title: 'Blueming', artists: ['IU'] }],
+    can_analyze: true, message: '网易云歌单解析成功。已导入2/1196首歌曲；未导入1194首。 当前公开页面解析限制，仅导入前20首歌曲用于分析。', next_step: '核对预览后分析', import_preview: preview,
     import_rows: [{ track_title: 'Unavailable', source_platform: 'netease', import_status: 'SKIPPED_DETAIL_UNAVAILABLE', availability: 'UNKNOWN' }],
   } }))
   await page.route('**/api/imports/netease-preview/analyze', route => {
@@ -419,9 +419,10 @@ test('NetEase partial import uses the existing preview and confirmed analysis fl
   await page.goto('/')
   await page.locator('#playlist-link').fill('https://y.music.163.com/m/playlist?id=123')
   await page.getByRole('button', { name: '检查链接读取能力' }).click()
-  await expect(page.locator('.link-result')).toContainText('NetEase playlist detected')
-  await expect(page.locator('.link-result')).toContainText('Tracks imported: 2')
-  await expect(page.locator('.import-preview')).toContainText('Imported 2 / 3 tracks')
+  await expect(page.locator('.link-result')).toContainText('网易云歌单解析成功')
+  await expect(page.locator('.link-result')).toContainText('已导入2/1196首歌曲')
+  await expect(page.locator('.link-result')).toContainText('当前公开页面解析限制，仅导入前20首歌曲用于分析')
+  await expect(page.locator('.import-preview')).toContainText('Imported 2 / 1196 tracks')
   await expect(page.locator('.import-preview')).toContainText('REAL_PUBLIC_LINK')
   await page.locator('.link-result summary').click()
   await expect(page.locator('.link-result')).toContainText('详情不可用或缺少艺人，未导入')
@@ -482,7 +483,7 @@ test('all seven cards disclose credentials and separate real acceptance from fil
   }
   await expect(page.locator('#connection-panel')).toContainText('自行部署')
   await expect(page.locator('#connection-panel')).toContainText('不要求用户提供账号密码或 Cookie')
-  await expect(page.locator('#public-link-panel')).toContainText('网易云：公开页面完整列出歌曲时可尝试导入')
-  await expect(page.locator('#public-link-panel')).toContainText('详情查询最多 20 首 / 20 秒')
+  await expect(page.locator('#public-link-panel')).toContainText('网易云按公开页面可获取范围尝试导入')
+  await expect(page.locator('#public-link-panel')).toContainText('最多 20 首 / 20 秒')
   await expect(page.locator('#public-link-panel')).toContainText('不需要账号密码或 Cookie')
 })
