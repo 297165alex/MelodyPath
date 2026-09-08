@@ -6,7 +6,7 @@
 
 “音乐资产分散在不同平台，单个平台的推荐又容易把人困在舒适区。MelodyPath 是一个 Rust 核心、可解释、可审计的专用音乐 Agent：它把真实歌单分析、探索推荐、好友比较、版本雷达和跨平台复制放进同一个 Web App。”
 
-镜头：首页平台能力区。说明按钮由后端 Capability 决定；没有官方能力的平台不会出现虚假 Connect，也没有密码或 Cookie 输入框。
+镜头：首页平台能力区。简述 Spotify / YouTube 先 Connect 官方账号再读取；中国平台优先上传或粘贴。链接识别、页面可访问与歌曲导入是三件事。说明按钮由后端 Capability 决定；没有官方能力的平台不会出现虚假 Connect，也没有密码或 Cookie 输入框。
 
 ## 0:30—1:10｜真实歌单 Analyze
 
@@ -28,7 +28,7 @@
 
 “页面展示的是结构化、可核验轨迹：User Goal → Decision → 白名单 Rust Tool → ToolResult → Continue/Replan/Finish。解析、身份、评分、去重和写入仍由 Rust 决定。当前若未配置 LLM，页面明确显示 `DETERMINISTIC_FALLBACK`，不会冒充真实 LLM。”
 
-展示真实 track count、种子、候选数、动态分支、SSE 进度、取消/恢复、Token 与费用。
+先指向页面五步导览：User Request → Agent Decision → Tool Call → Tool Result → Final Explanation。再在轨迹中选一条决策，指出工具名与结果摘要如何对应。只在 COMPLETED 后称为最终说明；失败或中断展示当前状态。最后指出 Data state、DETERMINISTIC_FALLBACK、Token 与费用；工具执行不等于真实 LLM 已验收。
 
 ## 2:55—3:35｜Compare
 
@@ -42,7 +42,7 @@
 
 打开 `/transfer`：Spotify source → YouTube destination → Match → Preview → Resolve ambiguous → Confirm → Create new private playlist → Write → Report。
 
-“主产品语义是复制，原 Spotify 歌单不会被修改或删除。写入前必须确认歧义与版本 fallback；单曲失败不终止整个任务；run id、SSE、取消和恢复可核验。当前真人 OAuth 未完成，因此本页应显示 `MANUAL_AUTH_REQUIRED`，而不是展示假的目标链接。”
+“主产品语义是复制，原 Spotify 歌单不会被修改或删除。写入前必须确认歧义与版本 fallback；单曲失败不终止整个任务；run id、SSE、取消和恢复可核验。Spotify / YouTube 账号和曲目读取已有真人验收记录，真实创建与写入仍未验收；现场按实际配置、授权和写权限展示状态，没有真实目标链接时不宣称迁移通过。”
 
 ## 4:45—5:00｜Rust、成本与安全
 

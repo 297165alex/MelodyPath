@@ -169,9 +169,9 @@ Spotify / YouTube 优先使用官方连接或公开 URL；文件和文本是备�
 - 如果没有导出文件，可以复制歌曲列表，并整理为每行一首的 `歌手 - 歌名` 后粘贴导入。
 推荐方式：
 
-1. 复制平台生成的公开歌单链接，粘贴到 **Public Playlist Link** 区域进行检测；
-2. 如果平台当前允许完整且合规地解析，MelodyPath 会显示真实 Import Preview；
-3. 如果页面只能识别或检查可访问性，请上传 CSV / TXT 等文件，或复制歌曲列表并按每行 `歌手 - 歌名` 粘贴。
+1. 上传 CSV / TXT / JSON / M3U 等支持的文件，或复制歌曲列表，按每行 `歌手 - 歌名` 粘贴；
+2. Rust 实际解析到歌曲后显示 Import Preview，核对后确认分析；
+3. 公开 URL 可用于检测：网易云 / QQ 为 `ACCESSIBILITY_CHECK_ONLY`，酷狗 / 汽水为 `URL_RECOGNITION_ONLY`，当前均不能通过链接导入完整歌曲。
 
 网易云支持识别 `https://y.music.163.com/m/playlist?id=...`、`https://music.163.com/playlist?id=...` 及 `playlist?id=...` 路由。公开页面可访问不等于完整曲目可导入；没有完整、稳定的公开数据时，能力保持 `ACCESSIBILITY_CHECK_ONLY`，不会生成虚假歌曲。
 
@@ -482,7 +482,7 @@ MelodyPath 不会：
 
 ### 为什么不能直接连接网易云？
 
-由于平台开放能力限制，MelodyPath 不使用账号密码或 Cookie。目前支持网易云公开歌单链接识别与可访问性检测，以及文件导入和文本导入。只有公开页面提供完整、稳定且允许使用的数据时才会自动生成 Import Preview；否则请使用 CSV / TXT 或粘贴 `歌手 - 歌名`。
+由于平台开放能力限制，MelodyPath 不使用账号密码或 Cookie。目前支持网易云公开歌单链接识别与可访问性检测，以及文件导入和文本导入。当前无法通过官方接口读取完整歌曲列表，请上传 CSV / TXT / JSON / M3U 或粘贴 `歌手 - 歌名`。公开链接识别不等于歌曲读取，只有官方 API 返回真实歌曲数据后才生成链接 Import Preview；文件/文本则以实际解析结果生成预览。
 
 ### 为什么 Spotify 需要授权？
 
@@ -502,9 +502,21 @@ Windows 用户 clone 仓库后，在项目根目录运行：
 
 普通用户使用已经部署好的 MelodyPath 时无需申请 Developer Credentials。自行部署且需要真实 Spotify、YouTube、Apple Music 或 Last.fm 能力时，由部署者在平台官方控制台创建应用，把 README“配置 Endpoint / Key”中列出的变量设置在后端运行环境，并登记完全一致的 OAuth Redirect URI。凭据不得输入前端、写入 README、提交 Git 或输出到日志；修改后需重启后端。
 
+### 链接显示“页面可访问”，为什么没有 Import Preview？
+
+链接识别、可访问性检查、歌曲读取是三个独立状态。网易云 / QQ 只做前两项，酷狗 / 汽水只识别链接。检查成功不会生成歌曲；请改用文件或文本。
+
+### 页面无法连接后端、官方导入失败或旧预览失效怎么办？
+
+- 启动失败：按启动日志确认前端实际端口，并检查后端 `/health`；端口占用时使用可用端口并保持代理与回调配置一致。
+- 官方导入失败：按页面错误检查配置、授权、权限和额度；普通用户重新走官方授权，开发者配置由部署者处理。不会自动切换 Demo。
+- 服务重启后旧预览失效：重新解析文件或读取歌单，再核对新预览。Copy 任务不支持跨重启恢复。
+
+答辩准备：[架构说明](docs/architecture_explanation.md)、[代码导读](docs/code_walkthrough.md)、[五分钟脚本](docs/demo_script.md)。
+
 # Testing
 
-最近一次最终审计记录（2026-09-08）：
+最近一次最终审计记录（2026-09-08；展示优化再次执行下列 fmt、test、release build 及三项前端检查，cargo check 保留既有记录）：
 
 | 检查 | 结果 |
 |---|---|
@@ -514,7 +526,7 @@ Windows 用户 clone 仓库后，在项目根目录运行：
 | `cargo build --release --locked` | PASS |
 | `npm --prefix frontend run lint` | PASS |
 | `npm --prefix frontend run build` | PASS |
-| `npm --prefix frontend run test:e2e` | **16/16 PASS** |
+| `npm --prefix frontend run test:e2e` | **23/23 PASS（含本轮 Import 状态与 Agent 展示回归）** |
 
 Rust 测试覆盖导入格式与大歌单、Genre/艺人/版本规范化、Energy 缺失、Last.fm Provider 降级、三区推荐、候选池换批、源歌单排除、Compare、结构化 AgentDecision、非法工具、动态下一步、步数/费用限制、真实 Analysis 绑定、Copy 分页与匹配、歧义确认、失败隔离、取消/恢复，以及 OAuth 安全边界。
 

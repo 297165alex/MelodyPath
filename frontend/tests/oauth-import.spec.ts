@@ -1,5 +1,63 @@
 import { test, expect, type Page } from '@playwright/test'
 
+for (const [platform, capability, access, accessible] of [
+  ['netease', 'ACCESSIBILITY_CHECK_ONLY', 'page_reachable', true],
+  ['qq_music', 'ACCESSIBILITY_CHECK_ONLY', 'page_reachable', true],
+  ['netease', 'ACCESSIBILITY_CHECK_ONLY', 'page_not_accessible', false],
+  ['qq_music', 'ACCESSIBILITY_CHECK_ONLY', 'check_failed', null],
+  ['kugou', 'URL_RECOGNITION_ONLY', 'not_checked', null],
+  ['qishui', 'URL_RECOGNITION_ONLY', 'not_checked', null],
+] as const) {
+  test(`${platform} ${access} never implies track import`, async ({ page }) => {
+    await setup(page)
+    await page.route('**/api/playlists/inspect-link', route => route.fulfill({ json: {
+      recognized: true, platform, platform_label: platform, capability,
+      publicly_accessible: accessible, access_status: access, preview_tracks: [],
+      track_count: null, can_analyze: false, message: 'Synthetic accessibility contract',
+      next_step: 'Synthetic fixture only',
+    } }))
+    await page.goto('/')
+    await page.locator('#playlist-link').fill('https://y.music.163.com/m/playlist?id=7736940069')
+    await page.getByRole('button', { name: '检查链接读取能力' }).click()
+    const result = page.locator('.link-result')
+    await expect(result).toContainText('已识别公开歌单链接')
+    await expect(result).toContainText('当前无法通过官方接口读取完整歌曲列表')
+    await expect(result).toContainText('CSV / TXT / JSON / M3U')
+    await expect(result).toContainText('歌手 - 歌名')
+    await expect(result).toContainText(accessible === true ? '页面可访问（不代表歌曲已读取）' : accessible === false ? '页面不可访问' : access === 'check_failed' ? '检查失败' : '未检查')
+    await expect(result.locator('.link-preview')).toHaveCount(0)
+    await expect(result.getByRole('button', { name: '确认并进入 Copy Playlist 预览' })).toHaveCount(0)
+    await result.getByRole('button', { name: '导入文件或文本', exact: true }).click()
+    await expect(page.locator('#more-import details')).toHaveAttribute('open', '')
+    await expect(page.getByRole('button', { name: '解析并预览文本' })).toBeVisible()
+  })
+}
+
+test('Agent guide is visible before execution and explicit Demo keeps its data label', async ({ page }) => {
+  await setup(page)
+  await page.route('**/api/tasks', route => route.fulfill({ json: {
+    id: 'synthetic-agent', scenario: 'personal_exploration', goal: 'Synthetic request',
+    status: 'COMPLETED', progress: 1, current_step: 1, message: 'Synthetic final explanation',
+    decision_mode: 'DETERMINISTIC_FALLBACK', data_state: 'DEMO', retries: 0,
+    input_tokens: 0, output_tokens: 0, estimated_cost_usd: 0,
+    decisions_json: JSON.stringify([{ action: 'execute', next_tool: 'synthetic_tool', reason: 'Synthetic decision' }]),
+    tool_calls_json: JSON.stringify([{ call_id: 'synthetic-call', tool: 'prepare_explanation', step_id: 'one', attempt: 1 }]),
+    tool_results_json: JSON.stringify([{ call_id: 'synthetic-call', success: true, summary: 'Synthetic result', output: { summary: 'Synthetic analysis explanation' } }]),
+  } }))
+  await page.goto('/agent')
+  await expect(page.getByRole('list', { name: 'Agent 展示流程' }).locator('li')).toHaveCount(5)
+  await expect(page.getByRole('button', { name: '启动 Agent 工具循环' })).toBeDisabled()
+  await page.getByRole('checkbox', { name: '明确使用 Demo' }).check()
+  await page.getByRole('button', { name: '启动 Agent 工具循环' }).click()
+  await expect(page.locator('.agent-message')).toContainText('DETERMINISTIC_FALLBACK')
+  await expect(page.locator('.agent-message')).toContainText('DEMO')
+  await expect(page.locator('.agent-trace')).toContainText('Synthetic decision')
+  await expect(page.locator('.agent-trace')).toContainText('synthetic_tool')
+  await expect(page.locator('.agent-trace')).toContainText('Synthetic result')
+  await expect(page.locator('.agent-trace')).toContainText('Synthetic final explanation')
+  await expect(page.locator('.agent-trace')).toContainText('Synthetic analysis explanation')
+})
+
 // Isolated synthetic fixtures. These tests do not claim real OAuth or platform acceptance.
 async function setup(page: Page, youtubeConnected = false, youtubeError = false) {
   await page.route('**/api/**', async route => {
@@ -70,7 +128,7 @@ test('public link transport failure has an actionable message', async ({ page })
   await page.route('**/api/playlists/inspect-link', route => route.abort())
   await page.goto('/')
   await page.locator('#playlist-link').fill('https://open.spotify.com/playlist/1234567890123456789012')
-  await page.getByRole('button', { name: '检查并导入预览' }).click()
+  await page.getByRole('button', { name: '检查链接读取能力' }).click()
   await expect(page.locator('.error-box').last()).toContainText('请确认服务已启动')
   await expect(page.getByText('Failed to fetch', { exact: true })).toHaveCount(0)
 })
@@ -90,7 +148,7 @@ for (const platform of ['spotify', 'youtube']) {
       } }))
       await page.goto('/')
       await page.locator('#playlist-link').fill('https://open.spotify.com/playlist/1234567890123456789012')
-      await page.getByRole('button', { name: '检查并导入预览' }).click()
+      await page.getByRole('button', { name: '检查链接读取能力' }).click()
       if (authorized) {
         await expect(page.locator('.link-preview')).toContainText('Synthetic Song')
         await expect(page.getByRole('dialog')).toHaveCount(0)
@@ -125,7 +183,7 @@ test('Apple configuration required never offers Google OAuth or fabricated track
   } }))
   await page.goto('/')
   await page.locator('#playlist-link').fill('https://music.apple.com/us/playlist/pl.synthetic')
-  await page.getByRole('button', { name: '检查并导入预览' }).click()
+  await page.getByRole('button', { name: '检查链接读取能力' }).click()
   await expect(page.locator('.link-result')).toContainText('当前演示环境尚未配置 Apple Music Developer Token')
   await expect(page.locator('.link-result').getByRole('button', { name: '导入文件或文本', exact: true })).toBeVisible()
   await expect(page.locator('.link-result a[href*="authorize"]')).toHaveCount(0)
@@ -148,7 +206,7 @@ test('Apple catalog preview shows skipped rows and requires existing Copy confir
   } }))
   await page.goto('/')
   await page.locator('#playlist-link').fill('https://music.apple.com/us/playlist/pl.synthetic')
-  await page.getByRole('button', { name: '检查并导入预览' }).click()
+  await page.getByRole('button', { name: '检查链接读取能力' }).click()
   await expect(page.locator('.link-preview')).toContainText('中文 日本語 한국어')
   await page.locator('.link-result summary').click()
   await expect(page.locator('.link-result')).toContainText('重复曲目，已跳过')

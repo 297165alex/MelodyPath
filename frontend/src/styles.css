@@ -237,8 +237,17 @@ h1, h2, h3, p { margin-top: 0; }
 .query-stats b { display: block; color: var(--forest); font-size: 17px; }
 .candidate-seed { color: var(--forest); background: #eef2ed; padding: 7px 9px; font-size: 9px; }
 @media (max-width: 650px) { .recommendation-evidence { grid-template-columns: 1fr; }.query-stats { grid-template-columns: 1fr 1fr; } }
-.agent-trace { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; max-height: 320px; overflow-y: auto; }
-.agent-trace > p { display: flex; flex-direction: column; gap: 2px; margin: 5px 0; padding: 7px; background: #f5f2ea; font-size: 9px; }
+.agent-trace { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; overflow-wrap: anywhere; }
+.agent-trace > p { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; padding: 10px; background: #f5f2ea; font-size: 13px; }
+.agent-trace > .eyebrow { display: block; margin-top: 20px; }
+.import-guide { padding: 18px; margin-bottom: 24px; border: 1px solid var(--line); border-radius: 12px; background: #f5f2ea; }
+.import-guide p { margin: 10px 0; }
+.import-stages p { display: grid; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.import-stages .import-next-step { border: 0; }
+.agent-workflow { display: flex; flex-wrap: wrap; gap: 12px; list-style: none; padding: 0; margin: 0 0 24px; }
+.agent-workflow li { display: flex; align-items: center; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 13px; }
+.agent-workflow li > span { font-weight: 700; }
+@media (max-width: 600px) { .agent-workflow { flex-direction: column; } .agent-workflow li { justify-content: space-between; } }
 .agent-trace > p small { color: var(--ink-soft); }
 .version-radar-results { margin-top: 20px; }
 .version-radar-results > .alternate-panel { margin-top: 10px; }
