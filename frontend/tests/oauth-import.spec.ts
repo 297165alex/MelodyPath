@@ -96,6 +96,33 @@ for (const [platform, capability, access, accessible] of [
   })
 }
 
+test('NetEase public metadata shows declared count without creating Import Preview', async ({ page }) => {
+  await setup(page)
+  // This contract test does not depend on the external Google Fonts stylesheet.
+  await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }))
+  let downstreamRequests = 0
+  await page.route('**/api/import/**', route => { downstreamRequests++; return route.abort() })
+  await page.route('**/api/playlists/inspect-link', route => route.fulfill({ json: {
+    recognized: true, platform: 'netease', platform_label: '网易云音乐',
+    capability: 'ACCESSIBILITY_CHECK_ONLY', publicly_accessible: true,
+    access_status: 'page_reachable', playlist_id: '123456', playlist_id_valid: true,
+    playlist_name: 'Synthetic 公开歌单', track_count: 15, preview_tracks: [], import_rows: [],
+    structured_data_status: 'public_track_list_incomplete', can_analyze: false,
+    message: '公开页面声明 15 首，JSON-LD 实际列出 10 项。公开歌曲列表不完整。未生成 Track。',
+    next_step: '请使用文件或文本导入。',
+  } }))
+  await page.goto('/')
+  await page.locator('#playlist-link').fill('https://y.music.163.com/m/playlist?id=123456')
+  await page.getByRole('button', { name: '检查链接读取能力' }).click()
+  const result = page.locator('.link-result')
+  await expect(result).toContainText('Synthetic 公开歌单')
+  await expect(result).toContainText('页面声明 15 首（不是已导入数量）')
+  await expect(result).toContainText('JSON-LD 实际列出 10 项')
+  await expect(result.locator('.link-preview')).toHaveCount(0)
+  await expect(result.getByRole('button', { name: /确认/ })).toHaveCount(0)
+  expect(downstreamRequests).toBe(0)
+})
+
 test('Agent guide is visible before execution and explicit Demo keeps its data label', async ({ page }) => {
   await setup(page)
   await page.route('**/api/tasks', route => route.fulfill({ json: {

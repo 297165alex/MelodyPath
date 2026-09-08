@@ -5,6 +5,8 @@ use anyhow::{Context, Result};
 use reqwest::{Client, Url, redirect::Policy};
 use std::time::Duration;
 
+mod netease;
+
 #[derive(Clone)]
 pub struct PlatformService {
     client: Client,
@@ -419,14 +421,16 @@ impl PlatformService {
             return Ok(initial);
         }
         let mut link = link;
-        let response = self
+        let mut request = self
             .client
-            .get(link.normalized_url.as_deref().unwrap_or(parsed.as_str()))
-            .header("Range", "bytes=0-65535")
-            .send()
-            .await;
+            .get(link.normalized_url.as_deref().unwrap_or(parsed.as_str()));
+        if link.platform != "netease" {
+            request = request.header("Range", "bytes=0-65535");
+        }
+        let response = request.send().await;
         let mut resolved_url = None;
         let mut structured_data_status = "not_available".to_string();
+        let mut public_metadata = None;
         let (publicly_accessible, access_status, message) = match response {
             Ok(mut response) if response.status().is_success() => {
                 let final_url = response.url().clone();
@@ -437,25 +441,55 @@ impl PlatformService {
                 {
                     link = resolved_link;
                 }
-                let prefix = read_body_prefix(&mut response, 256 * 1024).await;
-                structured_data_status = inspect_public_structure(&prefix);
-                let structure_note = match structured_data_status.as_str() {
-                    "schema_org_playlist_found_policy_unverified" => {
-                        "页面含 schema.org 歌单结构，但尚未验证平台条款允许自动导入，因此没有提取曲目。"
-                    }
-                    "page_state_found_not_stable_api" => {
-                        "页面含站点内部状态数据，但它不是稳定的官方开放 API，因此没有依赖或解析。"
-                    }
-                    _ => "页面未发现可作为稳定官方歌单 API 的公开结构化曲目数据。",
-                };
-                (
-                    Some(true),
-                    "page_reachable".to_string(),
-                    format!(
-                        "已识别 {} 链接且官方公开页面可访问。{structure_note}",
-                        link.label
-                    ),
-                )
+                if link.platform == "netease" {
+                    let html = response
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .is_some_and(|v| {
+                            v.split(';')
+                                .next()
+                                .is_some_and(|v| v.trim().eq_ignore_ascii_case("text/html"))
+                        });
+                    let metadata = if response.status() != reqwest::StatusCode::OK || !html {
+                        netease::PublicMetadata {
+                            status: "public_page_response_rejected",
+                            ..Default::default()
+                        }
+                    } else {
+                        match read_public_page(&mut response, 512 * 1024).await {
+                            Some(body) => netease::extract(&body),
+                            None => netease::PublicMetadata {
+                                status: "public_page_incomplete_or_too_large",
+                                ..Default::default()
+                            },
+                        }
+                    };
+                    structured_data_status = metadata.status.into();
+                    let message = metadata.explanation();
+                    public_metadata = Some(metadata);
+                    (Some(true), "page_reachable".to_string(), message)
+                } else {
+                    let prefix = read_body_prefix(&mut response, 256 * 1024).await;
+                    structured_data_status = inspect_public_structure(&prefix);
+                    let structure_note = match structured_data_status.as_str() {
+                        "schema_org_playlist_found_policy_unverified" => {
+                            "页面含 schema.org 歌单结构，但尚未验证平台条款允许自动导入，因此没有提取曲目。"
+                        }
+                        "page_state_found_not_stable_api" => {
+                            "页面含站点内部状态数据，但它不是稳定的官方开放 API，因此没有依赖或解析。"
+                        }
+                        _ => "页面未发现可作为稳定官方歌单 API 的公开结构化曲目数据。",
+                    };
+                    (
+                        Some(true),
+                        "page_reachable".to_string(),
+                        format!(
+                            "已识别 {} 链接且官方公开页面可访问。{structure_note}",
+                            link.label
+                        ),
+                    )
+                }
             }
             Ok(response) => (
                 Some(false),
@@ -486,8 +520,8 @@ impl PlatformService {
             publicly_accessible,
             access_status,
             structured_data_status,
-            playlist_name: None,
-            track_count: None,
+            playlist_name: public_metadata.as_ref().and_then(|m| m.name.clone()),
+            track_count: public_metadata.as_ref().and_then(|m| m.declared_tracks),
             preview_tracks: vec![],
             can_analyze: false,
             message,
@@ -498,6 +532,19 @@ impl PlatformService {
             },
         })
     }
+}
+
+// A bounded complete body is required before parsing NetEase metadata. A partial
+// response or read error must not be mistaken for a complete public playlist.
+async fn read_public_page(response: &mut reqwest::Response, limit: usize) -> Option<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if chunk.len() > limit.saturating_sub(body.len()) {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Some(body)
 }
 
 async fn read_body_prefix(response: &mut reqwest::Response, limit: usize) -> Vec<u8> {
@@ -1111,5 +1158,64 @@ mod tests {
             "schema_org_playlist_found_policy_unverified"
         );
         assert!(recognition_result(&link).preview_tracks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn public_page_reader_rejects_oversized_and_broken_bodies() {
+        use tokio::io::AsyncWriteExt;
+        for (body, content_length, limit, expected) in [
+            ("complete", 8, 8, Some(b"complete".to_vec())),
+            ("oversized", 9, 8, None),
+            ("partial", 20, 32, None),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                use tokio::io::AsyncReadExt;
+                let mut buffer = [0; 4096];
+                let _ = stream.read(&mut buffer).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n{body}"
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            });
+            let mut response = Client::new()
+                .get(format!("http://{address}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(read_public_page(&mut response, limit).await, expected);
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Explicit anonymous network acceptance; public page availability may change"]
+    async fn netease_real_public_page_acceptance() {
+        let result = PlatformService::new()
+            .inspect_link("https://y.music.163.com/m/playlist?id=7299150850")
+            .await
+            .unwrap();
+        assert_eq!(result.playlist_id.as_deref(), Some("7299150850"));
+        assert_eq!(result.publicly_accessible, Some(true));
+        assert!(
+            result.playlist_name.is_some(),
+            "No public metadata: {}",
+            result.structured_data_status
+        );
+        assert!(result.track_count.is_some());
+        assert_eq!(
+            result.capability,
+            PublicLinkCapability::AccessibilityCheckOnly
+        );
+        assert!(result.preview_tracks.is_empty());
+        assert!(result.import_rows.is_empty());
+        assert!(!result.can_analyze);
+        // Aggregate public metadata only; never output raw pages or headers.
+        println!(
+            "declared={:?}; status={}; imported=0",
+            result.track_count, result.structured_data_status
+        );
     }
 }

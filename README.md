@@ -184,6 +184,8 @@ Spotify / YouTube 优先使用官方连接或公开 URL；文件和文本是备�
 
 网易云支持识别 `https://y.music.163.com/m/playlist?id=...`、`https://music.163.com/playlist?id=...` 及 `playlist?id=...` 路由。公开页面可访问不等于完整曲目可导入；没有完整、稳定的公开数据时，能力保持 `ACCESSIBILITY_CHECK_ONLY`，不会生成虚假歌曲。
 
+2026-09-08 公开页面解析补充：网易云匿名 HTML 中的 `MusicPlaylist` JSON-LD 可用于展示真实歌单名称和页面声明数量，并检查实际条目数及标题/艺人是否缺失。声明数量不是已导入数量。真实公开样本仍仅列出部分条目且缺艺人，因此不生成 Track，不调用 MetadataResolver 补猜，不进入推荐；文件/文本继续复用既有 Import Preview → MetadataResolver → Recommendation。详见 [网易云公开页面解析记录](docs/netease_public_playlist.md)。
+
 
 ### 快速体验
 

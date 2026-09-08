@@ -24,6 +24,7 @@
 12. Copy MVP（代码与 Mock/浏览器验证完成，真实 OAuth 阻塞）：独立 `/transfer`、最多 5 个候选、确定性评分、歧义确认、私有目标、会话状态/SSE/取消/恢复、逐首结果与 CSV/JSON 报告。
 13. 持续验证：Rust 格式/检查/测试、前端 lint/build、HTTP 与浏览器回归、真实凭据手动验收。
 14. 平台无关 Metadata Layer（本轮完成）：MusicBrainz 优先解析、确定性匹配状态与原输入降级；标准 Track 可经独立 Spotify export service 使用既有 OAuth 搜索并在确认后新建私有歌单。
+15. 网易云公开页面元数据（2026-09-08）：复用移动/主站 URL 校验，解析匿名 JSON-LD 名称、声明数量并验证条目完整性；真实样本不完整，保留 ACCESSIBILITY_CHECK_ONLY。未启用曲目转换或 URL 分析，不用 Resolver 补猜歌曲。
 
 ## 风险与边界
 

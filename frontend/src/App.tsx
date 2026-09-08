@@ -156,6 +156,7 @@ function LinkImportStatus({ result }: { result: PlaylistLinkInspection }) {
   return <div className="import-stages" aria-label="公开链接读取状态">
     <p><b>1 · URL Recognition / 链接识别</b><span>{result.recognized ? `已识别公开歌单链接 · ${result.platform_label}` : '未识别为支持的公开歌单链接'}</span></p>
     <p><b>2 · Accessibility Check / 可访问性检查</b><span>{accessibility}</span></p>
+    {result.platform === 'netease' && (result.playlist_name != null || result.track_count != null) && <p><b>公开页面元数据</b><span>{result.playlist_name ?? '歌单名称未知'} · 页面声明 {result.track_count ?? '未知'} 首（不是已导入数量）</span></p>}
     <p><b>3 · Track Import / 歌曲读取</b><span>{hasTracks ? `官方 API 已返回 ${result.track_count ?? result.preview_tracks.length} 首歌曲，请核对预览。` : chinaPlatform ? '尚未导入歌曲。当前无法通过官方接口读取完整歌曲列表。' : '尚未获得可导入歌曲，请按下方提示完成配置、授权或重试。'}</span></p>
     {chinaPlatform && <p className="import-next-step"><b>下一步：提供歌曲列表</b><span>上传 CSV / TXT / JSON / M3U，或直接粘贴：歌手 - 歌名。</span></p>}
   </div>

@@ -1,5 +1,7 @@
 # Platform capability audit
 
+> 2026-09-08 网易云后续解析：现在可从匿名 JSON-LD 展示歌单名称、声明数量和完整性检查结果；真实样本依然不完整，能力仍为 ACCESSIBILITY_CHECK_ONLY，未启用 Track 导入。最新范围见 [网易云公开页面解析记录](netease_public_playlist.md)，下方验收保留历史口径。
+
 官方能力审计日期：2026-09-07；最终产品收尾：2026-09-08（未开展新 API 研究）。范围：`feature/more-platforms` 上的平台读取扩展；不扩大 Spotify/Google scope，不改变已有写入确认闸门。本报告取代旧文档中 Apple “只有 bootstrap” 的当前实现描述；旧的真人验收记录保留其原始日期与范围。
 
 ## 官方能力与实现矩阵
