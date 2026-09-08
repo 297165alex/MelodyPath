@@ -293,6 +293,102 @@ test('UTF-16 desktop export is decoded without corrupting Unicode before shared 
   await expect.poll(() => received).toBe(content)
 })
 
+test('first CSV upload renders Preview immediately and the same file can be selected again', async ({ page }) => {
+  await setup(page)
+  let previewCalls = 0
+  await page.route('**/api/imports/preview', async route => {
+    previewCalls += 1
+    await new Promise(resolve => setTimeout(resolve, 250))
+    await route.fulfill({ json: importPreviewFixture(`preview-${previewCalls}`) })
+  })
+  await page.goto('/')
+  const input = page.locator('#more-import input[type=file]')
+  const file = { name: 'same.csv', mimeType: 'text/csv', buffer: Buffer.from('artist,title\n周杰伦,晴天\nIU,Blueming') }
+  await input.setInputFiles(file)
+  await expect(page.locator('.import-operation')).toContainText('正在解析歌曲...')
+  await expect(page.locator('.import-operation')).toContainText('已提交 2 / 2 行')
+  const preview = page.locator('.import-preview')
+  await expect(preview).toContainText('✅ 歌单解析成功')
+  await expect(preview).toContainText('已读取：2 首歌曲')
+  await expect(preview).toContainText('请查看下方 Preview ↓')
+  await expect(preview).toContainText('晴天')
+  await expect(preview).toContainText('✓ Success')
+  await expect(preview).toContainText('Metadata 待匹配')
+  await expect(preview.getByText('missing', { exact: true })).toHaveCount(0)
+  await expect(preview).toBeInViewport()
+
+  await input.setInputFiles(file)
+  await expect.poll(() => previewCalls).toBe(2)
+  await expect(preview).toContainText('✅ 歌单解析成功')
+})
+
+test('import failures explain missing fields and show supported examples', async ({ page }) => {
+  await setup(page)
+  await page.route('**/api/imports/preview', route => route.fulfill({ status: 400, json: { error: '未找到歌曲列，请提供 title 字段' } }))
+  await page.goto('/')
+  await page.locator('#more-import input[type=file]').setInputFiles({ name: 'bad.csv', mimeType: 'text/csv', buffer: Buffer.from('album,year\nSynthetic,2026') })
+  const feedback = page.locator('.import-error-feedback')
+  await expect(feedback).toContainText('缺少歌曲字段')
+  await expect(feedback).toContainText('artist,title')
+  await expect(feedback).toContainText('artist - title')
+})
+
+test('invalid file encoding is reported as an encoding problem', async ({ page }) => {
+  await setup(page)
+  await page.goto('/')
+  await page.locator('#more-import input[type=file]').setInputFiles({ name: 'broken.csv', mimeType: 'text/csv', buffer: Buffer.from([0xc3, 0x28]) })
+  await expect(page.locator('.import-error-feedback')).toContainText('编码问题')
+})
+
+test('real analysis clearly separates missing Last.fm configuration from import success', async ({ page }) => {
+  await setup(page)
+  await page.route('**/api/imports/preview', route => route.fulfill({ json: importPreviewFixture('lastfm-preview') }))
+  await page.route('**/api/imports/*/analyze', route => route.fulfill({ json: analysisWithoutLastFmFixture() }))
+  await page.goto('/')
+  await page.locator('#more-import input[type=file]').setInputFiles({ name: 'songs.csv', mimeType: 'text/csv', buffer: Buffer.from('artist,title\n周杰伦,晴天\nIU,Blueming') })
+  await page.getByRole('button', { name: '确认并分析真实数据' }).click()
+  await page.getByRole('button', { name: '探索推荐', exact: true }).click()
+  const status = page.locator('.lastfm-readiness')
+  await expect(status).toContainText('⚠ Last.fm Recommendation Service Not Configured')
+  await expect(status).toContainText('当前环境未配置 LASTFM_API_KEY')
+  await expect(status).toContainText('不影响歌曲导入')
+  await expect(status).toContainText('不影响音乐画像分析')
+  await expect(status).toContainText('仅影响外部音乐推荐功能')
+  await expect(status).toContainText('管理员配置 Last.fm API Key')
+})
+
+function importPreviewFixture(id: string) {
+  return {
+    id, name: 'Synthetic CSV', file_name: 'same.csv', data_state: 'REAL_FILE', source_label: '真实文件导入',
+    total_rows: 2, parsed_count: 2, warning_count: 0, invalid_count: 0, detected_fields: ['artist', 'title'],
+    preview_tracks: [
+      { title: '晴天', artists: ['周杰伦'], genres: [], source: 'same.csv', original_row: '周杰伦,晴天', metadata_status: 'missing', metadata_confidence: 0, warnings: [] },
+      { title: 'Blueming', artists: ['IU'], genres: [], source: 'same.csv', original_row: 'IU,Blueming', metadata_status: 'partial', metadata_confidence: 0.4, warnings: [] },
+    ],
+    requires_column_confirmation: false, text_order: 'artist_title', questions: [],
+  }
+}
+
+function analysisWithoutLastFmFixture() {
+  const track = { id: 'track-1', title: '晴天', normalized_title: '晴天', artists: ['周杰伦'], genres: [], platform: 'local', external_ids: {}, version_type: 'ORIGINAL', mood_tags: [], metadata_confidence: 0 }
+  const queryStats = {
+    successful_seed_count: 0, failed_seed_count: 0, raw_track_similar_count: 0, raw_artist_similar_count: 0,
+    raw_artist_top_tracks_count: 0, raw_tag_top_tracks_count: 0, raw_candidate_count: 0, after_version_filter_count: 0,
+    after_normalization_count: 0, after_deduplication_count: 0, after_source_exclusion_count: 0, after_artist_cap_count: 0,
+    comfort_candidate_count: 0, expansion_candidate_count: 0, surprise_candidate_count: 0, tag_layer1_candidate_count: 0,
+    tag_layer1_rejected_count: 0, tag_layer2_candidate_count: 0, tag_layer2_rejected_count: 0, core_tags: [],
+    tag_similar_success_count: 0, tag_similar_failure_count: 0, similar_tag_count: 0, layer1_tags: [], layer2_tags: [],
+    tag_top_track_counts: [], request_budget_exhausted_count: 0, request_budget_used_count: 0, retry_count: 0,
+    genre_bridge_candidate_count: 0, second_hop_artist_candidate_count: 0, deduplicated_candidate_count: 0,
+  }
+  return {
+    analysis_id: 'analysis-no-lastfm', playlist: { id: 'playlist-1', name: 'Synthetic CSV', owner_label: 'Local', source: 'file', is_demo: false, tracks: [track] },
+    report: { playlist_name: 'Synthetic CSV', source_label: '真实文件导入', is_demo: false, track_count: 1, genre_distribution: [], artist_distribution: [['周杰伦', 1]], era_distribution: [], album_distribution: [], duplicate_track_count: 0, collaboration_track_count: 0, genre_matched_count: 0, genre_coverage: 0, energy_matched_count: 0, energy_coverage: 0, metrics: [], core_preferences: [], adjacent_preferences: [], unexplored_preferences: [], summary: '本地分析已完成', confidence: 0.5, limitations: [] },
+    recommendations: [], route: [], unmatched_tracks: [], metadata_resolutions: [],
+    recommendation_summary: { source_label: 'Last.fm Music Discovery API', status: 'not_configured', message: '未配置 Last.fm', candidate_count: 0, zones: [], seeds: [], query_stats: queryStats, comfort_pool: [], expansion_pool: [], surprise_pool: [] },
+  }
+}
+
 test('all seven cards disclose credentials and separate real acceptance from file support', async ({ page }) => {
   await setup(page)
   await page.route('**/api/platforms/capabilities', route => route.fulfill({ json:

@@ -6,6 +6,7 @@ import type { AgentDecision, AgentPlan, AgentSettings, AgentTask, AlternateVersi
 
 type Tab = 'home' | 'taste' | 'recommend' | 'compare' | 'versions' | 'transfer' | 'agent' | 'history' | 'settings'
 type ExportTarget = { platform: string; tracks: Track[]; label: string }
+type ImportProgress = { phase: 'reading' | 'parsing' | 'metadata'; total: number }
 
 const navItems: { id: Tab; label: string }[] = [
   { id: 'home', label: '开始' }, { id: 'taste', label: '品味地图' }, { id: 'recommend', label: '探索推荐' },
@@ -189,20 +190,36 @@ function Home({ demo, capabilities, spotify, youtube, onRefreshConnections, onDe
   const [configPlatform, setConfigPlatform] = useState<'spotify' | 'youtube' | 'apple' | null>(null)
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
   const [pendingImport, setPendingImport] = useState<ImportPreviewRequest | null>(null)
+  const [importError, setImportError] = useState('')
+  const [importProgress, setImportProgress] = useState<ImportProgress | null>(null)
+  const [operationSeconds, setOperationSeconds] = useState(0)
+  const previewRef = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    if (!importProgress) { setOperationSeconds(0); return }
+    const timer = window.setInterval(() => setOperationSeconds((value) => value + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [importProgress])
+
+  useEffect(() => {
+    if (!importPreview) return
+    window.requestAnimationFrame(() => previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+  }, [importPreview])
 
   const prepareImport = async (request: ImportPreviewRequest) => {
-    setBusy(true); setError(''); setImportPreview(null); setPendingImport(request)
+    const total = estimateImportRows(request.content, request.format)
+    setMoreOpen(true); setBusy(true); setImportError(''); setImportPreview(null); setPendingImport(request); setImportProgress({ phase: 'parsing', total })
     try { setImportPreview(await api.previewImport(request)) }
-    catch (reason) { onImportError(); setError(reason instanceof Error ? reason.message : '导入解析失败') }
-    finally { setBusy(false) }
+    catch (reason) { onImportError(); setImportError(reason instanceof Error ? reason.message : '无法识别内容') }
+    finally { setBusy(false); setImportProgress(null) }
   }
 
   const confirmImport = async () => {
     if (!importPreview) return
-    setBusy(true); setError('')
+    setBusy(true); setImportError(''); setImportProgress({ phase: 'metadata', total: importPreview.parsed_count })
     try { onManual(await api.analyzeImport(importPreview.id), importPreview.data_state) }
-    catch (reason) { onImportError(); setError(reason instanceof Error ? reason.message : '真实数据分析失败') }
-    finally { setBusy(false) }
+    catch (reason) { onImportError(); setImportError(reason instanceof Error ? reason.message : 'Metadata 分析失败') }
+    finally { setBusy(false); setImportProgress(null) }
   }
 
   const inspectLink = async () => {
@@ -219,13 +236,13 @@ function Home({ demo, capabilities, spotify, youtube, onRefreshConnections, onDe
 
   const loadFile = async (file?: File) => {
     if (!file) return
+    setBusy(true); setImportError(''); setImportProgress({ phase: 'reading', total: 1 }); setMoreOpen(true)
     try {
       const raw = await readPlaylistFile(file)
       setName(file.name.replace(/\.[^.]+$/, ''))
       const format = file.name.split('.').pop()?.toLowerCase() ?? ''
       await prepareImport({ name: file.name.replace(/\.[^.]+$/, ''), file_name: file.name, format, content: raw, data_state: 'REAL_FILE' })
-      setMoreOpen(true)
-    } catch (reason) { onImportError(); setError(reason instanceof Error ? reason.message : '文件读取失败') }
+    } catch (reason) { onImportError(); setImportError(reason instanceof Error ? reason.message : '无法识别内容'); setBusy(false); setImportProgress(null) }
   }
 
   const disconnectSpotify = async () => {
@@ -279,15 +296,43 @@ function Home({ demo, capabilities, spotify, youtube, onRefreshConnections, onDe
       return status?.configured ? <a className="primary" href={`/api/${provider}/authorize`}>Connect {provider === 'spotify' ? 'Spotify' : 'YouTube'}</a> : <button className="secondary" onClick={() => setConfigPlatform(provider)}>查看部署者配置说明</button>
     })()}{linkResult.import_rows && linkResult.import_rows.length > 0 && <details><summary>逐项导入报告 · {linkResult.import_rows.length} 个源条目 / {linkResult.import_rows.filter(row => row.import_status !== 'IMPORTED').length} 个跳过</summary><div className="spotify-track-preview">{linkResult.import_rows.map((row, index) => <div key={index}><strong>{row.track_title ?? '元数据不可用'}</strong><small>{(row.artist ?? []).join(', ') || '艺人缺失'} · {row.duration_ms == null ? '时长未知' : String(row.duration_ms) + ' ms'} · {humanCapability(row.availability)} · {humanCapability(row.import_status)}</small></div>)}</div></details>}{linkResult.capability === 'TRACK_IMPORT_AVAILABLE' && linkResult.preview_tracks.length > 0 && <><div className="link-preview"><span>Import Preview · 共 {linkResult.track_count} 首，展示前 {Math.min(10, linkResult.preview_tracks.length)} 首</span>{linkResult.preview_tracks.slice(0, 10).map((track) => <div key={track.id}><strong>{track.title}</strong><small>{track.artists.join(', ')}</small></div>)}</div><button className="primary" disabled={linkResult.capability !== 'TRACK_IMPORT_AVAILABLE'} onClick={confirmLink}>确认并进入 Copy Playlist 预览</button></>}<small>{linkResult.platform === 'apple_music' && linkResult.capability === 'CONFIG_REQUIRED' ? '普通用户无需申请开发者凭据，可直接使用文件或文本导入。' : humanPlatformText(linkResult.next_step)}</small>{!linkResult.can_analyze && <button className="secondary" onClick={() => { setMoreOpen(true); document.getElementById('more-import')?.scrollIntoView({ behavior: 'smooth' }) }}>导入文件或文本</button>}</div>}{error && <p className="error-box">{error}</p>}<p className="fine-print">公开链接识别不等于歌曲读取，只有官方 API 返回真实歌曲数据后才生成 Import Preview；平台曲目只用于用户确认后的传输。</p></div></section>
 
-    <section className="more-import-section" id="more-import"><details open={moreOpen} onToggle={(event) => setMoreOpen(event.currentTarget.open)}><summary><span><strong>上传你的歌单，开始探索你的音乐偏好</strong><small>先由 Rust 可靠解析并预览，确认后才会分析</small></span><b>{moreOpen ? '−' : '+'}</b></summary><div className="fallback-grid"><div className="input-card"><span className="eyebrow">REAL PLAYLIST IMPORT</span><h3>Import · 文件或批量文本</h3><p>✓ CSV / TXT / JSON 文件（也支持 TSV、M3U/M3U8）<br/>✓ 直接粘贴：歌手 - 歌名</p><p className="import-example">例如：<br/>周杰伦 - 晴天<br/>DEAN - instagram</p><p className="fallback-copy">支持自行整理的 CSV、TSV、JSON、TXT、M3U/M3U8；不代表各平台都有官方导出格式。Apple Music Mac 可用“文件 → 资料库 → 导出播放列表 → 文本文件”，或复制歌曲列。中国平台可手动整理“歌手 - 歌名”；不使用需要密码或 Cookie 的导出工具。暂不接收 XML / HTML。</p><label className="field"><span>歌单名称</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><label className="field"><span>批量文本</span><textarea rows={7} value={text} onChange={(event) => setText(event.target.value)} /></label><div className="input-actions"><label className="secondary upload-button">选择真实文件<input type="file" accept=".txt,.csv,.tsv,.json,.m3u,.m3u8" onChange={(event) => void loadFile(event.target.files?.[0])}/></label><button className="primary" onClick={() => void prepareImport({ name, format: 'txt', content: text, data_state: 'REAL_TEXT' })} disabled={busy}>{busy ? '正在解析…' : '解析并预览文本'}</button></div><p className="fine-print">没有导出文件？可以直接粘贴：歌手 - 歌名。也支持“歌名 — 歌手”“歌手 | 歌名”和“歌名 TAB 歌手”；顺序不确定时会要求确认。</p></div><div className="demo-fallback"><span className="demo-badge">DEMO MODE</span><h3>明确体验示例</h3><p>{demo.disclosure}</p><button className="secondary" onClick={onDemo}>体验 Demo</button><div><strong>只有点击本按钮才显示 Demo</strong><span>真实导入失败不会进入这里。</span></div></div></div>{error && <p className="error-box">{error}</p>}{importPreview && <ImportPreviewPanel preview={importPreview} busy={busy} onOrder={(order) => pendingImport && void prepareImport({ ...pendingImport, text_order: order })} onConfirm={() => void confirmImport()} />}</details></section>
+    <section className="more-import-section" id="more-import"><details open={moreOpen} onToggle={(event) => setMoreOpen(event.currentTarget.open)}><summary><span><strong>上传你的歌单，开始探索你的音乐偏好</strong><small>先由 Rust 可靠解析并预览，确认后才会分析</small></span><b>{moreOpen ? '−' : '+'}</b></summary><div className="fallback-grid"><div className="input-card"><span className="eyebrow">REAL PLAYLIST IMPORT</span><h3>Import · 文件或批量文本</h3><p>✓ CSV / TXT / JSON 文件（也支持 TSV、M3U/M3U8）<br/>✓ 直接粘贴：歌手 - 歌名</p><p className="import-example">例如：<br/>周杰伦 - 晴天<br/>DEAN - instagram</p><p className="fallback-copy">支持自行整理的 CSV、TSV、JSON、TXT、M3U/M3U8；不代表各平台都有官方导出格式。Apple Music Mac 可用“文件 → 资料库 → 导出播放列表 → 文本文件”，或复制歌曲列。中国平台可手动整理“歌手 - 歌名”；不使用需要密码或 Cookie 的导出工具。暂不接收 XML / HTML。</p><label className="field"><span>歌单名称</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><label className="field"><span>批量文本</span><textarea rows={7} value={text} onChange={(event) => setText(event.target.value)} /></label><div className="input-actions"><label className="secondary upload-button">选择真实文件<input type="file" accept=".txt,.csv,.tsv,.json,.m3u,.m3u8" onChange={(event) => { const input = event.currentTarget; const file = input.files?.[0]; input.value = ''; void loadFile(file) }}/></label><button className="primary" onClick={() => void prepareImport({ name, format: 'txt', content: text, data_state: 'REAL_TEXT' })} disabled={busy}>{busy ? '正在解析…' : '解析并预览文本'}</button></div><p className="fine-print">没有导出文件？可以直接粘贴：歌手 - 歌名。也支持“歌名 — 歌手”“歌手 | 歌名”和“歌名 TAB 歌手”；顺序不确定时会要求确认。</p></div><div className="demo-fallback"><span className="demo-badge">DEMO MODE</span><h3>明确体验示例</h3><p>{demo.disclosure}</p><button className="secondary" onClick={onDemo}>体验 Demo</button><div><strong>只有点击本按钮才显示 Demo</strong><span>真实导入失败不会进入这里。</span></div></div></div>{importProgress && <ImportProgressPanel progress={importProgress} seconds={operationSeconds}/>} {importError && <ImportErrorFeedback error={importError}/>} {importPreview && <div ref={(node) => { previewRef.current = node }}><ImportPreviewPanel key={importPreview.id} preview={importPreview} busy={busy} onOrder={(order) => pendingImport && void prepareImport({ ...pendingImport, text_order: order })} onConfirm={() => void confirmImport()} /></div>}</details></section>
     {spotifyPickerOpen && <SpotifyPlaylistPicker onClose={() => setSpotifyPickerOpen(false)} onExport={onExport} />}
     {youtubePickerOpen && <YouTubePlaylistPicker onClose={() => setYoutubePickerOpen(false)} onExport={onExport} />}
     {configPlatform && <ConfigurationWizard platform={configPlatform} onClose={() => setConfigPlatform(null)} onChecked={onRefreshConnections} />}
   </>
 }
 
+function estimateImportRows(content: string, format: string) {
+  const rows = content.split(/\r?\n/).filter((line) => line.trim()).length
+  return Math.max(1, ['csv', 'tsv'].includes(format.toLowerCase()) ? rows - 1 : rows)
+}
+
+function ImportProgressPanel({ progress, seconds }: { progress: ImportProgress; seconds: number }) {
+  const label = progress.phase === 'reading' ? '正在读取文件...' : progress.phase === 'parsing' ? '正在解析歌曲...' : '正在匹配 metadata...'
+  const unit = progress.phase === 'reading' ? '个文件' : progress.phase === 'parsing' ? '行' : '首歌曲'
+  return <div className="import-operation" role="status" aria-live="polite"><span className="loading-dot"/><div><strong>{label}</strong><span>后端处理中 · 已等待 {seconds} 秒</span></div><b>已提交 {progress.total} / {progress.total} {unit}</b></div>
+}
+
+function importErrorCategory(error: string) {
+  if (/编码|TextDecoder|UTF-?\d+/i.test(error)) return '编码问题'
+  if (/不支持的导入格式|文件格式|扩展名/i.test(error)) return '文件格式错误'
+  if (/未找到歌曲列|未找到歌手列|缺少.*(?:歌曲|歌手)|歌曲字段/i.test(error)) return '缺少歌曲字段'
+  return '无法识别内容'
+}
+
+function ImportErrorFeedback({ error }: { error: string }) {
+  return <div className="import-error-feedback" role="alert"><strong>⚠ {importErrorCategory(error)}</strong><p>{error}</p><span>支持格式示例：</span><pre>CSV:{'\n'}artist,title{'\n\n'}TXT:{'\n'}artist - title</pre></div>
+}
+
+function metadataPreviewState(status: string) {
+  if (status === 'complete') return { label: 'Matched', detail: 'Metadata 已就绪', tone: 'matched' }
+  if (status === 'partial') return { label: 'Waiting', detail: 'Metadata 待匹配', tone: 'waiting' }
+  return { label: 'Waiting', detail: 'Metadata 待匹配', tone: 'waiting' }
+}
+
 function ImportPreviewPanel({ preview, busy, onOrder, onConfirm }: { preview: ImportPreview; busy: boolean; onOrder: (order: 'artist_title' | 'title_artist') => void; onConfirm: () => void }) {
-  return <section className="import-preview panel"><div className="panel-title"><div><span className="eyebrow">IMPORT PREVIEW · {preview.data_state}</span><h3>{preview.file_name ?? preview.source_label}</h3></div><strong>is_demo=false</strong></div><div className="import-stats"><span><b>{preview.total_rows}</b>总行数</span><span><b>{preview.parsed_count}</b>成功解析</span><span><b>{preview.warning_count}</b>警告</span><span><b>{preview.invalid_count}</b>无法解析</span></div><p>检测字段：{preview.detected_fields.join(' · ') || '文本列'}</p>{preview.questions.map((question) => <p className="warning-box" key={question}>{question}</p>)}{preview.requires_column_confirmation && <div className="order-confirm"><strong>请选择文本列含义</strong><button className="secondary" onClick={() => onOrder('artist_title')}>左侧歌手，右侧歌名</button><button className="secondary" onClick={() => onOrder('title_artist')}>左侧歌名，右侧歌手</button></div>}<div className="import-track-list"><div className="import-track-head"><span>#</span><span>歌名</span><span>歌手</span><span>专辑</span><span>状态</span></div>{preview.preview_tracks.map((track, index) => <div className="import-track-row" key={`${track.original_row}-${index}`}><span>{index + 1}</span><strong>{track.title}</strong><span>{track.artists.join(' / ')}</span><span>{track.album ?? '—'}</span><em>{track.metadata_status}</em></div>)}</div><footer className="preview-actions"><span>预览前 {Math.min(20, preview.parsed_count)} 首；确认后全部 {preview.parsed_count} 首参与基础分析。</span><button className="primary" disabled={busy || preview.requires_column_confirmation} onClick={onConfirm}>{busy ? '正在分析…' : '确认并分析真实数据'}</button></footer></section>
+  return <section className="import-preview panel"><div className="import-success" role="status" aria-live="polite"><strong>✅ 歌单解析成功</strong><span>已读取：<b>{preview.parsed_count}</b> 首歌曲</span><span>请查看下方 Preview ↓</span></div><div className="panel-title"><div><span className="eyebrow">IMPORT PREVIEW · {preview.data_state}</span><h3>{preview.file_name ?? preview.source_label}</h3></div><strong>is_demo=false</strong></div><div className="import-stats"><span><b>{preview.total_rows}</b>总行数</span><span><b>{preview.parsed_count}</b>成功解析</span><span><b>{preview.warning_count}</b>警告</span><span><b>{preview.invalid_count}</b>无法解析</span></div><p>检测字段：{preview.detected_fields.join(' · ') || '文本列'}</p>{preview.questions.map((question) => <p className="warning-box" key={question}>{question}</p>)}{preview.requires_column_confirmation && <div className="order-confirm"><strong>请选择文本列含义</strong><button className="secondary" onClick={() => onOrder('artist_title')}>左侧歌手，右侧歌名</button><button className="secondary" onClick={() => onOrder('title_artist')}>左侧歌名，右侧歌手</button></div>}<div className="import-track-list"><div className="import-track-head"><span>#</span><span>歌名</span><span>歌手</span><span>专辑</span><span>解析</span><span>Metadata</span></div>{preview.preview_tracks.map((track, index) => { const metadata = metadataPreviewState(track.metadata_status); return <div className="import-track-row" key={`${track.original_row}-${index}`}><span>{index + 1}</span><strong>{track.title}</strong><span>{track.artists.join(' / ')}</span><span>{track.album ?? '—'}</span><em className="parse-success">✓ Success<small>已解析</small></em><em className={`metadata-state ${metadata.tone}`}>{metadata.label}<small>{metadata.detail}</small></em></div> })}</div><footer className="preview-actions"><span>预览前 {Math.min(20, preview.parsed_count)} 首；确认后全部 {preview.parsed_count} 首参与基础分析。</span><button className="primary" disabled={busy || preview.requires_column_confirmation} onClick={onConfirm}>{busy ? '正在分析…' : '确认并分析真实数据'}</button></footer></section>
 }
 
 function humanPlatformText(value: string = '') {
@@ -400,7 +445,7 @@ function TastePage({ personal, canExplore, spotifyConnected, onExplore, onExport
 
 function MetricCard({ label, display, explanation, value }: { label: string; display: string; explanation: string; value: number }) { return <article className="metric-card"><div className="ring" style={{ '--value': `${value * 360}deg` } as React.CSSProperties}><span>{display}</span></div><div><strong>{label}</strong><p>{explanation}</p></div></article> }
 function TasteZone({ label, values, tone }: { label: string; values: string[]; tone: string }) { return <div className={`taste-zone ${tone}`}><strong>{label}</strong><div>{values.map((value) => <span key={value}>{value}</span>)}</div></div> }
-function TrackLine({ track, resolution }: { track: Track; resolution?: PersonalAnalysis['metadata_resolutions'][number] }) { const matched = resolution && resolution.status !== 'UNMATCHED'; return <div className="track-line"><span className="album-placeholder">♪</span><span><strong>{track.title}</strong><small>{track.artists.join(', ')} · {track.album ?? '专辑未知'} · {track.release_year ?? '年份未知'}</small>{resolution && <small>{matched ? 'Matched' : 'Unmatched'}{resolution.source ? ` · Source: ${resolution.source}` : ''}{matched ? ` · ${Math.round(resolution.match_confidence * 100)}%` : ''}</small>}</span><em>{track.genres[0] ?? '元数据暂未匹配'}</em></div> }
+function TrackLine({ track, resolution }: { track: Track; resolution?: PersonalAnalysis['metadata_resolutions'][number] }) { const matched = resolution && resolution.status !== 'UNMATCHED'; return <div className="track-line"><span className="album-placeholder">♪</span><span><strong>{track.title}</strong><small>{track.artists.join(', ')} · {track.album ?? '专辑未知'} · {track.release_year ?? '年份未知'}</small>{resolution && <small>{matched ? 'Matched' : 'Not Found · 未找到外部 metadata'}{resolution.source ? ` · Source: ${resolution.source}` : ''}{matched ? ` · ${Math.round(resolution.match_confidence * 100)}%` : ''}</small>}</span><em>{track.genres[0] ?? '元数据暂未匹配'}</em></div> }
 
 function RecommendationPage({ personal, spotifyConnected, onExport }: { personal: PersonalAnalysis; spotifyConnected: boolean; onExport: (platform: string, tracks: Track[], label: string) => void }) {
   const zones = ['舒适区', '拓展区', '惊喜区']
@@ -415,6 +460,7 @@ function RecommendationPage({ personal, spotifyConnected, onExport }: { personal
   const [offsets, setOffsets] = useState<Record<string, number>>({ '舒适区': 0, '拓展区': 0, '惊喜区': 0 })
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [exhausted, setExhausted] = useState<Record<string, boolean>>({})
+  const lastFmConfigured = summary.status !== 'not_configured'
   useEffect(() => { setOffsets({ '舒适区': 0, '拓展区': 0, '惊喜区': 0 }); setExpanded({}); setExhausted({}) }, [personal.analysis_id])
   const visible = (zone: string) => expanded[zone] ? pools[zone] : pools[zone].slice(offsets[zone] ?? 0, (offsets[zone] ?? 0) + 4)
   const nextBatch = (zone: string) => {
@@ -425,6 +471,7 @@ function RecommendationPage({ personal, spotifyConnected, onExport }: { personal
   const tracks = zones.flatMap((zone) => visible(zone)).map((item) => item.track)
   return <div className="page-width">
     <PageIntro eyebrow="EXPLAINABLE RECOMMENDATION" title="一条听得懂的探索路线" copy="真实模式以 Last.fm 听众相似关系、相似艺术家和关联标签生成候选，再由 Rust 本地评分；Genre 缺失不会淘汰强相似候选。" badge={`${tracks.length} TRACKS · ${personal.report.is_demo ? 'DEMO DATA' : 'REAL DATA · is_demo=false'}`} />
+    {!personal.report.is_demo && <section className={`lastfm-readiness ${lastFmConfigured ? 'ready' : 'not-configured'}`} role="status"><strong>{lastFmConfigured ? '✓ Last.fm Recommendation Ready' : '⚠ Last.fm Recommendation Service Not Configured'}</strong>{lastFmConfigured ? <span>外部音乐推荐服务已配置；歌曲导入和音乐画像仍由各自的数据流程完成。</span> : <><span>当前环境未配置 LASTFM_API_KEY。</span><ul><li>不影响歌曲导入</li><li>不影响音乐画像分析</li><li>仅影响外部音乐推荐功能</li></ul><p>解决方式：管理员配置 Last.fm API Key。</p></>}</section>}
     <section className={`recommendation-status panel status-${summary.status}`}><div><span className="eyebrow">RECOMMENDATION SOURCE</span><h3>{summary.source_label}</h3><p>{summary.message}</p></div><div className="recommendation-coverage"><span><b>{personal.report.genre_matched_count}/{personal.report.track_count}</b>Genre 覆盖 · {Math.round(personal.report.genre_coverage * 100)}%</span><span><b>{personal.report.energy_matched_count}/{personal.report.track_count}</b>Energy 覆盖 · {Math.round(personal.report.energy_coverage * 100)}%</span><span><b>{summary.candidate_count}</b>真实候选</span><span><b>{personal.report.is_demo ? 'true' : 'false'}</b>is_demo</span></div><small>当前数据来源：{personal.report.source_label}</small></section>
     {!personal.report.is_demo && <section className="panel recommendation-evidence"><div><span className="eyebrow">SELECTED SEEDS</span><h3>实际采用的种子歌曲 · {summary.seeds.length} 首</h3><div className="seed-list">{summary.seeds.map((seed) => <span key={`${seed.title}-${seed.artists.join('-')}`}><b>{seed.title}</b><small>{seed.artists.join(', ')}</small></span>)}</div></div><div><span className="eyebrow">LAST.FM QUERY REPORT</span><div className="query-stats"><span><b>{stats.successful_seed_count}</b>成功种子</span><span><b>{stats.failed_seed_count}</b>失败种子</span><span><b>{stats.raw_track_similar_count}</b>track.getSimilar</span><span><b>{stats.raw_artist_similar_count}</b>artist.getSimilar</span><span><b>{stats.raw_artist_top_tracks_count}</b>artist.getTopTracks</span><span><b>{stats.raw_tag_top_tracks_count}</b>tag.getTopTracks</span><span><b>{stats.raw_candidate_count}</b>Last.fm 原始候选</span><span><b>{stats.after_version_filter_count}</b>版本过滤后</span><span><b>{stats.after_deduplication_count}</b>规范化去重后</span><span><b>{stats.after_source_exclusion_count}</b>排除原歌单后</span><span><b>{stats.after_artist_cap_count}</b>艺术家上限后</span><span><b>{stats.comfort_candidate_count}/{stats.expansion_candidate_count}/{stats.surprise_candidate_count}</b>候选池：舒适 / 拓展 / 惊喜</span><span><b>{stats.tag_layer1_candidate_count} / {stats.tag_layer1_rejected_count}</b>Tag 第一层获取 / 淘汰</span><span><b>{stats.tag_layer2_candidate_count} / {stats.tag_layer2_rejected_count}</b>Tag 第二层获取 / 淘汰</span><span><b>{stats.genre_bridge_candidate_count}/{stats.second_hop_artist_candidate_count}</b>Genre 桥梁 / 第二跳艺人</span><span><b>{stats.tag_similar_success_count}/{stats.tag_similar_failure_count}</b>tag.getSimilar 成功 / 失败</span><span><b>{stats.request_budget_used_count}/48 · retry {stats.retry_count}</b>请求预算 / 重试</span><span><b>{stats.request_budget_exhausted_count}</b>请求预算耗尽</span></div><p className="candidate-seed">核心标签：{stats.core_tags?.join(' · ') || '未获得'}<br/>第一层：{stats.layer1_tags?.join(' · ') || '空'}<br/>第二层：{stats.layer2_tags?.join(' · ') || '空'}</p></div></section>}
     {tracks.length > 0 && <ExportToolbar tracks={tracks} label={routeLabel} spotifyConnected={spotifyConnected} onExport={onExport}/>}

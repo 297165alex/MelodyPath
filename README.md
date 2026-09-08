@@ -493,6 +493,10 @@ MelodyPath 不会：
 
 # FAQ / Troubleshooting
 
+### 为什么我的歌曲可以解析，但是推荐结果为空？
+
+歌曲解析和音乐画像不依赖 Last.fm。如果需要外部推荐，需要由管理员配置 `LASTFM_API_KEY`。未配置时不影响文件导入、歌曲预览或本地音乐画像分析，页面会单独标明推荐服务尚未配置。
+
 ### 为什么不能直接连接网易云？
 
 由于平台开放能力限制，MelodyPath 不使用账号密码或 Cookie。目前支持网易云公开歌单链接识别与可访问性检测，以及文件导入和文本导入。当前无法通过官方接口读取完整歌曲列表，请上传 CSV / TXT / JSON / M3U 或粘贴 `歌手 - 歌名`。公开链接识别不等于歌曲读取，只有官方 API 返回真实歌曲数据后才生成链接 Import Preview；文件/文本则以实际解析结果生成预览。
@@ -529,7 +533,7 @@ Windows 用户 clone 仓库后，在项目根目录运行：
 
 # Testing
 
-最近一次最终审计记录（2026-09-08；本轮 UX 优化重跑 cargo test 及三项前端检查，fmt、cargo check、release build 保留既有通过记录）：
+最近一次最终审计记录（2026-09-08；本轮 Import 状态 UX 优化重跑三项前端检查，未修改后端；Rust、fmt 与 release build 保留既有通过记录）：
 
 | 检查 | 结果 |
 |---|---|
@@ -539,7 +543,7 @@ Windows 用户 clone 仓库后，在项目根目录运行：
 | `cargo build --release --locked` | PASS |
 | `npm --prefix frontend run lint` | PASS |
 | `npm --prefix frontend run build` | PASS |
-| `npm --prefix frontend run test:e2e` | **26/26 PASS（含 Import、Agent、首次引导及手机/平板导航回归）** |
+| `npm --prefix frontend run test:e2e` | **30/30 PASS（含 Import 首传/同文件重选、错误分类、Last.fm 状态、Agent、首次引导及手机/平板导航回归）** |
 
 Rust 测试覆盖导入格式与大歌单、MusicBrainz 中英日韩/不存在歌曲解析、Spotify 标准 Track 搜索成功/未匹配/缺少授权、Genre/艺人/版本规范化、Energy 缺失、Last.fm Provider 降级、三区推荐、候选池换批、源歌单排除、Compare、结构化 AgentDecision、非法工具、动态下一步、步数/费用限制、真实 Analysis 绑定、Copy 分页与匹配、歧义确认、失败隔离、取消/恢复，以及 OAuth 安全边界。
 
