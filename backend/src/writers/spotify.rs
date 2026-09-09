@@ -314,7 +314,11 @@ impl SpotifyPlaylistWriter {
                 write_authorized: token
                     .granted_scopes
                     .split_whitespace()
-                    .any(|scope| scope == WRITE_SCOPE),
+                    .any(|scope| scope == WRITE_SCOPE)
+                    && token
+                        .granted_scopes
+                        .split_whitespace()
+                        .any(|scope| scope == "playlist-modify-public"),
                 configured: true,
                 connected: true,
                 user_id: Some(token.spotify_user_id),
@@ -612,7 +616,10 @@ impl SpotifyPlaylistWriter {
             config.accounts_authorize_url,
             urlencoding::encode(&config.client_id),
             urlencoding::encode(&if write {
-                format!("{} {}", SCOPES, WRITE_SCOPE)
+                format!(
+                    "{} {} playlist-modify-public user-read-private",
+                    SCOPES, WRITE_SCOPE
+                )
             } else {
                 SCOPES.into()
             }),
@@ -953,6 +960,10 @@ impl PlaylistWriter for SpotifyPlaylistWriter {
                 .granted_scopes
                 .split_whitespace()
                 .any(|scope| scope == WRITE_SCOPE)
+                && token
+                    .granted_scopes
+                    .split_whitespace()
+                    .any(|scope| scope == "playlist-modify-public")
         });
         Ok(status(
             "spotify",
@@ -1377,9 +1388,13 @@ mod tests {
                 .route("/token", post(move || async move { Json(match mode {
                     "missing" => json!({"expires_in":3600}),
                     "empty" => json!({"access_token":"", "expires_in":3600}),
-                    _ => json!({"access_token":"synthetic-access", "refresh_token":"synthetic-refresh", "expires_in":3600}),
+                    _ => json!({"access_token":"synthetic-access", "refresh_token":"synthetic-refresh", "expires_in":3600, "scope":"playlist-read-private playlist-modify-private playlist-modify-public user-read-private"}),
                 }) }))
-                .route("/me", get(|| async { Json(json!({"id":"synthetic-user","display_name":"Synthetic User"})) }));
+                .route("/me", get(|| async { Json(json!({"id":"synthetic-user","display_name":"Synthetic User"})) }))
+                .route("/me/playlists", post(|Json(body): Json<Value>| async move {
+                    assert_eq!(body["public"], false);
+                    Json(json!({"id":"synthetic-playlist", "external_urls":{"spotify":"https://open.spotify.com/playlist/synthetic"}}))
+                }));
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
             let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -1402,6 +1417,13 @@ mod tests {
                 let (session, _) = result.unwrap();
                 let status = writer.connection_status(Some(&session)).await;
                 assert!(status.connected);
+                assert!(status.write_authorized);
+                assert!(writer.authorize(Some(&session)).await.unwrap().authorized);
+                let created = writer
+                    .create_playlist("Synthetic copy", Some(&session))
+                    .await
+                    .unwrap();
+                assert_eq!(created.id, "synthetic-playlist");
                 assert!(
                     !serde_json::to_string(&status)
                         .unwrap()
@@ -1431,12 +1453,15 @@ mod tests {
                 reqwest::Url::parse(&writer.begin_authorization_for(write).await.unwrap()).unwrap();
             let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
             let expected = if write {
-                format!("{} {}", SCOPES, WRITE_SCOPE)
+                format!(
+                    "{} {} playlist-modify-public user-read-private",
+                    SCOPES, WRITE_SCOPE
+                )
             } else {
                 SCOPES.to_string()
             };
             assert_eq!(query["scope"], expected);
-            assert!(!query["scope"].contains("user-read-private"));
+            assert_eq!(query["scope"].contains("user-read-private"), write);
         }
         writer.sessions.write().await.insert(
             "synthetic-session".into(),

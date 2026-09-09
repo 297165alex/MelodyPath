@@ -16,6 +16,7 @@ mod release_radar;
 mod resolver;
 mod secure_store;
 mod transfer;
+mod version_discovery;
 mod writers;
 
 use axum::{
@@ -206,6 +207,7 @@ fn app(state: AppState) -> Router {
         .route("/api/youtube/playlists", get(youtube_playlists))
         .route("/api/youtube/import", post(youtube_import))
         .route("/api/youtube/disconnect", post(youtube_disconnect))
+        .route("/api/version-radar/discover", post(discover_versions))
         .route("/api/exports/preview", post(export_preview))
         .route("/api/exports/execute", post(export_execute))
         .route("/api/exports/{id}/download", get(download_export))
@@ -468,6 +470,26 @@ async fn search_alternate_versions(
             is_mock: false,
         }),
     }
+}
+
+async fn discover_versions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<version_discovery::DiscoveryRequest>,
+) -> Json<version_discovery::DiscoveryResult> {
+    let spotify_session = auth_session(&headers);
+    let youtube_session = youtube_auth_session(&headers);
+    Json(
+        version_discovery::discover(
+            request,
+            &[
+                &version_discovery::SpotifyAdapter(&state.spotify, spotify_session.as_deref()),
+                &version_discovery::YoutubeAdapter(&state.youtube, youtube_session.as_deref()),
+                &version_discovery::MusicBrainzAdapter,
+            ],
+        )
+        .await,
+    )
 }
 
 async fn scan_release_radar(
@@ -860,10 +882,10 @@ async fn transfer_connector(
                 .spotify
                 .connection_status(auth_session.as_deref())
                 .await
-                .connected
+                .write_authorized
             {
                 return Err(ApiError::unauthorized(
-                    "Spotify OAuth 会话不存在或已过期；未创建播放列表",
+                    "WRITE_AUTH_REQUIRED: 需要 Spotify 写入权限或登录已过期；请重新授权，未创建播放列表",
                 ));
             }
             Ok(Arc::new(transfer::SpotifyDestinationConnector::new(
@@ -1943,6 +1965,25 @@ async fn export_execute(
 ) -> Result<Json<PlaylistExportResult>, ApiError> {
     if !request.confirmed {
         return Err(ApiError::bad_request("写入前必须查看预览并明确确认"));
+    }
+    // Check authorization before consuming the one-shot preview so reauthorization can resume it.
+    let platform = state
+        .previews
+        .read()
+        .await
+        .get(&request.preview_id)
+        .map(|stored| stored.preview.platform.clone());
+    if platform.as_deref() == Some("spotify") {
+        let status = state
+            .spotify
+            .authorize(auth_session(&headers).as_deref())
+            .await
+            .map_err(ApiError::internal)?;
+        if !status.authorized {
+            return Err(ApiError::unauthorized(
+                "WRITE_AUTH_REQUIRED: 需要 Spotify 写入权限；登录过期时请重新授权，原预览已保留。",
+            ));
+        }
     }
     let stored = state
         .previews

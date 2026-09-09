@@ -105,6 +105,9 @@ export const api = {
   searchAlternateVersions: (track: Track, versionTypes: VersionType[], useMock = false) => request<AlternateVersionSearchResult>('/api/alternate-versions/search', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ track, version_types: versionTypes, use_mock: useMock }),
   }),
+  discoverVersions: (track: Track, preferences: string[]) => request<{ source_track: Track; candidates: { title: string; artist: string; platform: string; url: string; version_type: string; language: string | null; confidence: number; reason: string }[]; provider_status: string[]; status: string }>('/api/version-radar/discover', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ track, preferences }),
+  }),
   scanReleaseRadar: (tracks: Track[]) => request<ReleaseRadarResult>('/api/version-radar/releases', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tracks }),
   }),

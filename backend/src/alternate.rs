@@ -96,7 +96,9 @@ pub fn score_youtube_version_candidate(
     let base_title_similarity =
         token_similarity(&source_version.base_title, &target_version.base_title);
     let artist_similarity = token_similarity(&source.artists.join(" "), &artists.join(" "));
-    if base_title_similarity < 0.55 || artist_similarity < 0.25 {
+    let explicit_cover = raw_title.to_lowercase().contains("cover")
+        && token_similarity(&source.artists.join(" "), raw_title) >= 0.15;
+    if base_title_similarity < 0.55 || (artist_similarity < 0.25 && !explicit_cover) {
         return None;
     }
     if !requested.contains(&target_version.version_type) {

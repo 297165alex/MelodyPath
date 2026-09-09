@@ -4,6 +4,8 @@ MelodyPath 是一个以 Rust 为可信计算核心、用可解释 Agent 帮助�
 
 > 2026-09-09 流程更新：按本轮用户要求，Spotify 账号歌单选择入口现已支持 Import Preview → Confirm Import → 元数据分析 → 推荐结果；旧版这一入口仅进入写入预览。来源保持 REAL_ACCOUNT / Spotify，禁止发送给 LLM；connector 与其他平台流程不变。旧文档中“Spotify 仅传输”的描述对此入口已不适用。详见 [修复与验证记录](docs/spotify_confirm_analysis_fix.md)。本轮自动测试不代表真实 OAuth 分析已验收。
 
+> 2026-09-09 Copy / Version Radar：Spotify 写权限升级可在独立 OAuth 窗口完成并恢复原预览或已确认执行；`/versions` 新增 Spotify、YouTube、MusicBrainz 统一 Provider 与偏好排序。详见 [实现与验收边界](docs/copy_auth_version_discovery.md)。真实外部写入尚未验收。
+
 # Overview
 
 音乐平台擅长推荐“你已经喜欢的东西”，却很少解释为什么一首新歌适合你、它离当前偏好有多远，或两个人的歌单可以从哪里建立共同入口。MelodyPath 因此把歌曲解析、身份归一化、音乐画像、候选生成、确定性评分和执行权限放进一条可核验的工作流。

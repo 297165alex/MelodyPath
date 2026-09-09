@@ -28,6 +28,8 @@
 16. 产品体验收口（2026-09-09）：文件、文本、Spotify、YouTube、中国平台与 Friend Bridge 复用统一 Task Progress；文本解析增加 Unicode 规范化及歌手/歌名顺序推断；Friend Bridge 加入 `zh/en/ja/ko` 语言兼容度；QQ/酷狗仅条件读取公开 JSON-LD；Version Radar 增加 MusicBrainz 发行动态并补齐 loading/error/empty 状态。
 17. 智能化增强（2026-09-09）：文本规则层支持 `by`、书名号/日韩引号、编号、斜杠、冒号和高置信度无分隔符；仅 `REAL_TEXT` 低置信度输入可调用受限 LLM 结构化 fallback，结果必须逐行落地到原文且仍由 MetadataResolver 验证。新增 resolved-only Taste Profile 与并列排名；Friend Bridge 对外补充 `score`；QQ 公开 URL 与 JSON-LD 安全契约补齐。
 
+18. Copy 授权与跨平台版本发现（2026-09-09）：按用户要求扩展 Spotify 写 scope、保留原窗口任务并在回调核验后恢复；VersionProvider 统一 Spotify / YouTube / MusicBrainz，确定性分类与 Taste Profile / 显式兴趣排序。见 `docs/copy_auth_version_discovery.md`，不代表真实外部写入验收。
+
 ## 风险与边界
 
 - Spotify 真写入依赖用户自行创建应用并提供环境变量；无凭据时不影响 P0。

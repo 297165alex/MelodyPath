@@ -1,5 +1,81 @@
 import { test, expect, type Page } from '@playwright/test'
 
+for (const auth of ['write', 'readonly', 'expired', 'expired-execute'] as const) {
+  test(`Spotify Copy ${auth}: resumes original draft after authorization`, async ({ page, context }) => {
+    await setup(page)
+    let granted = true
+    let created = 0
+    await page.route('**/api/spotify/me', route => route.fulfill({ json: { configured: true, connected: auth !== 'expired' || granted, write_authorized: granted, message: 'Synthetic', policy_notice: 'Fixture' } }))
+    await page.route('**/api/writers/status', route => route.fulfill({ json: [{platform:'spotify',label:'Spotify',availability:'available',authorized:granted,is_demo:false,message:'Synthetic writer'}] }))
+    await page.route('**/api/imports/preview', route => route.fulfill({json:importPreviewFixture('copy-auth')}))
+    await page.route('**/api/imports/*/analyze', route => route.fulfill({json:analysisWithoutLastFmFixture()}))
+    const track = analysisWithoutLastFmFixture().playlist.tracks[0]
+    await page.route('**/api/exports/preview', route => {
+      expect(granted).toBe(true)
+      return route.fulfill({ json: {preview_id:'synthetic-copy',platform:'spotify',playlist_name:'Keep my draft',requested_count:1,auto_matched_count:1,needs_confirmation_count:0,unmatched_count:0,is_demo:false,matches:[{source_track:track,target_platform:'spotify',status:'matched',confidence:1,match_reason:'Synthetic identity',candidates:[]}]} })
+    })
+    await page.route('**/api/exports/execute', route => {
+      expect(granted).toBe(true); expect(route.request().postDataJSON().confirmed).toBe(true); created++
+      return route.fulfill({json:{platform:'spotify',playlist_name:'Keep my draft',requested_count:1,added_count:1,failed_count:0,needs_confirmation_count:0,successful_tracks:[],failed_tracks:[],ambiguous_tracks:[],playlist_url:'https://open.spotify.com/playlist/synthetic',is_demo:false}})
+    })
+    await context.route('**/api/spotify/authorize?write=true', route => route.fulfill({contentType:'text/html',body:'<p>Explicit synthetic OAuth page</p>'}))
+    await page.goto('/')
+    await page.locator('#more-import input[type=file]').setInputFiles({name:'copy.csv',mimeType:'text/csv',buffer:Buffer.from('artist,title\nSynthetic,Song')})
+    await page.getByRole('button',{name:'确认并分析真实数据'}).click()
+    await page.getByRole('button',{name:'Create Spotify Playlist',exact:true}).first().click()
+    granted = auth === 'write' || auth === 'expired-execute'
+    const dialog = page.getByRole('dialog',{name:'保存到音乐平台'})
+    await dialog.locator('.field input').fill('Keep my draft')
+    await dialog.getByRole('button',{name:'下一步：匹配并预览'}).click()
+    if (auth === 'readonly' || auth === 'expired') {
+      await expect(dialog).toContainText(auth === 'readonly' ? '需要 Spotify 写入权限' : '登录已过期')
+      expect(created).toBe(0)
+      const popupPromise = page.waitForEvent('popup')
+      await dialog.getByRole('button',{name:'重新授权 Spotify'}).click()
+      const popup = await popupPromise
+      await expect(popup).toHaveURL(/authorize\?write=true/)
+      granted = true
+      await popup.goto('/?provider=spotify&oauth=connected', { waitUntil: 'commit' })
+    }
+    await expect(dialog.locator('.confirm-check')).toContainText('Keep my draft')
+    expect(created).toBe(0)
+    await dialog.locator('.confirm-check input').check()
+    if (auth === 'expired-execute') granted = false
+    await dialog.getByRole('button',{name:'确认并创建新歌单'}).click()
+    if (auth === 'expired-execute') {
+      expect(created).toBe(0)
+      const popupPromise = page.waitForEvent('popup')
+      await dialog.getByRole('button',{name:'重新授权 Spotify'}).click()
+      const popup = await popupPromise
+      granted = true
+      await popup.goto('/?provider=spotify&oauth=connected', { waitUntil: 'commit' })
+    }
+    await expect(dialog.getByRole('link',{name:'打开真实歌单 ↗'})).toHaveAttribute('href','https://open.spotify.com/playlist/synthetic')
+    expect(created).toBe(1)
+  })
+}
+
+test('Cross-platform discovery renders language, reasons and partial provider failures', async ({page}) => {
+  await setup(page)
+  await page.route('**/api/imports/preview', route => route.fulfill({json:importPreviewFixture('discovery')}))
+  await page.route('**/api/imports/*/analyze', route => route.fulfill({json:analysisWithoutLastFmFixture()}))
+  await page.route('**/api/version-radar/discover', route => {
+    expect(route.request().postDataJSON().preferences).toContain('acoustic')
+    return route.fulfill({json:{source_track:analysisWithoutLastFmFixture().playlist.tracks[0],status:'READY',provider_status:['YouTube: unavailable','MusicBrainz: OK'],candidates:[{title:'Synthetic Acoustic Cover',artist:'Synthetic Artist',platform:'musicbrainz',url:'https://musicbrainz.org/recording/synthetic',version_type:'acoustic',language:'ko',confidence:0.84,reason:'Matches your preference for acoustic arrangements'}]}})
+  })
+  await page.goto('/versions')
+  await page.locator('.transfer-source input[type=file]').setInputFiles({name:'version.csv',mimeType:'text/csv',buffer:Buffer.from('artist,title\nSynthetic,Song')})
+  await page.getByRole('button',{name:'acoustic',exact:true}).click()
+  await page.getByRole('button',{name:'发现跨平台版本',exact:true}).click()
+  const results = page.locator('.version-radar-results')
+  await expect(results).toContainText('Alternative Versions')
+  await expect(results).toContainText('晴天')
+  await expect(results).toContainText('musicbrainz')
+  await expect(results).toContainText('Match: 84%')
+  await expect(results).toContainText('Matches your preference')
+  await expect(results).toContainText('YouTube: unavailable')
+})
+
 for (const width of [390, 768]) {
   test(`responsive menu reaches every page and closes with Escape at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 740 })
