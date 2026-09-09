@@ -31,7 +31,7 @@ export interface ImportPreview {
   id: string
   name: string
   file_name?: string
-  data_state: 'REAL_FILE' | 'REAL_TEXT' | 'REAL_PUBLIC_LINK'
+  data_state: 'REAL_FILE' | 'REAL_TEXT' | 'REAL_PUBLIC_LINK' | 'REAL_ACCOUNT'
   source_label: string
   total_rows: number
   parsed_count: number
@@ -45,7 +45,7 @@ export interface ImportPreview {
 }
 
 export interface ImportAnalysisSummary {
-  data_state: 'REAL_FILE' | 'REAL_TEXT' | 'REAL_PUBLIC_LINK'
+  data_state: 'REAL_FILE' | 'REAL_TEXT' | 'REAL_PUBLIC_LINK' | 'REAL_ACCOUNT'
   source_label: string
   input_count: number
   parsed_count: number
@@ -303,6 +303,7 @@ export interface SpotifyPlaylistSummary {
   image_url?: string
 }
 export interface SpotifyImportResult {
+  import_preview?: ImportPreview
   playlists: { id: string; name: string; spotify_url?: string; imported_count: number }[]
   tracks: Track[]
   track_count: number

@@ -2,6 +2,8 @@
 
 MelodyPath 是一个以 Rust 为可信计算核心、用可解释 Agent 帮助用户分析歌单、探索新音乐、比较好友品味并安全复制播放列表的本地优先 Web 应用。
 
+> 2026-09-09 流程更新：按本轮用户要求，Spotify 账号歌单选择入口现已支持 Import Preview → Confirm Import → 元数据分析 → 推荐结果；旧版这一入口仅进入写入预览。来源保持 REAL_ACCOUNT / Spotify，禁止发送给 LLM；connector 与其他平台流程不变。旧文档中“Spotify 仅传输”的描述对此入口已不适用。详见 [修复与验证记录](docs/spotify_confirm_analysis_fix.md)。本轮自动测试不代表真实 OAuth 分析已验收。
+
 # Overview
 
 音乐平台擅长推荐“你已经喜欢的东西”，却很少解释为什么一首新歌适合你、它离当前偏好有多远，或两个人的歌单可以从哪里建立共同入口。MelodyPath 因此把歌曲解析、身份归一化、音乐画像、候选生成、确定性评分和执行权限放进一条可核验的工作流。

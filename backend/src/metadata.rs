@@ -31,6 +31,14 @@ pub struct MetadataService {
 }
 
 impl MetadataService {
+    #[cfg(test)]
+    pub fn synthetic_import_pipeline() -> Self {
+        let mut service =
+            Self::with_recommendation_provider(Arc::new(tests::MockRecommendationProvider));
+        service.resolver = Arc::new(tests::SyntheticResolver);
+        service
+    }
+
     pub fn new() -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(7))
@@ -129,8 +137,29 @@ impl MetadataService {
         source_label: String,
         data_state: DataState,
         input_count: usize,
-        mut imported: Vec<ImportedTrack>,
+        imported: Vec<ImportedTrack>,
     ) -> PersonalDemo {
+        self.analyze_imported_with_progress(
+            name,
+            source_label,
+            data_state,
+            input_count,
+            imported,
+            |_| {},
+        )
+        .await
+    }
+
+    pub async fn analyze_imported_with_progress(
+        &self,
+        name: String,
+        source_label: String,
+        data_state: DataState,
+        input_count: usize,
+        mut imported: Vec<ImportedTrack>,
+        progress: impl Fn(&'static str) + Send,
+    ) -> PersonalDemo {
+        progress("metadata");
         let mut provider_requests = 0;
         let mut resolved_tracks = Vec::with_capacity(imported.len());
         let mut metadata_resolutions = Vec::with_capacity(imported.len());
@@ -203,6 +232,7 @@ impl MetadataService {
             tracks: resolved_tracks,
         };
         let report = engine::analyze_playlist(&playlist);
+        progress("recommendation");
         let (recommendations, recommendation_summary, route) =
             build_real_recommendations(self.recommendation_provider.as_ref(), &playlist, &report)
                 .await;
@@ -621,7 +651,24 @@ mod tests {
     };
     use async_trait::async_trait;
 
-    struct MockRecommendationProvider;
+    pub(super) struct MockRecommendationProvider;
+
+    pub(super) struct SyntheticResolver;
+
+    #[async_trait]
+    impl MetadataResolver for SyntheticResolver {
+        async fn resolve(&self, track: &Track) -> anyhow::Result<ResolutionOutcome> {
+            assert_eq!(track.platform, "spotify");
+            let mut track = track.clone();
+            track.genres = vec!["Pop".into()];
+            Ok(ResolutionOutcome {
+                track,
+                status: MetadataMatchStatus::HighMatch,
+                source: Some("Synthetic resolver".into()),
+                match_confidence: 0.95,
+            })
+        }
+    }
 
     #[async_trait]
     impl RecommendationProvider for MockRecommendationProvider {

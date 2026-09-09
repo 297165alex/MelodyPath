@@ -490,3 +490,120 @@ test('all seven cards disclose credentials and separate real acceptance from fil
   await expect(page.locator('#public-link-panel')).toContainText('最多 20 首 / 20 秒')
   await expect(page.locator('#public-link-panel')).toContainText('不需要账号密码或 Cookie')
 })
+
+
+async function spotifyPreview(page: Page, missingId = false) {
+  await setup(page)
+  let releaseImport!: () => void
+  const imported = new Promise<void>(resolve => { releaseImport = resolve })
+  await page.route('**/api/spotify/import', async route => {
+    expect(route.request().postDataJSON()).toEqual({ playlist_ids: ['synthetic-0'] })
+    await imported
+    await route.fulfill({ json: {
+      playlists: [{ id: 'synthetic-0', name: 'Synthetic Spotify', imported_count: 1 }],
+      tracks: [{ id: 'synthetic-track', title: 'Synthetic Song', artists: ['Synthetic Artist'] }],
+      track_count: 1, attribution: 'Synthetic contract, not real OAuth acceptance',
+      import_preview: missingId ? undefined : { ...importPreviewFixture('spotify-account-preview'), data_state: 'REAL_ACCOUNT', source_label: 'Spotify 官方账号歌单' },
+    } })
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: '选择我的歌单', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '选择 Spotify 歌单' })
+  await dialog.getByRole('checkbox').first().check()
+  await dialog.getByRole('button', { name: '确认选择 / Continue', exact: true }).click()
+  await expect(dialog.getByRole('status')).toContainText('Importing...')
+  releaseImport()
+  await expect(dialog.getByRole('heading')).toContainText('Import Preview')
+  return dialog
+}
+
+test('Spotify select → preview → confirm streams analysis and recommendations, with stable route', async ({ page }) => {
+  // Delay synthetic stream chunks so each real progress event can be observed.
+  await page.addInitScript(() => {
+    const original = window.fetch.bind(window)
+    window.fetch = async (...args) => {
+      const response = await original(...args)
+      if (!response.headers.get('content-type')?.includes('application/x-ndjson')) return response
+      const body = await response.text()
+      const lines = body.split('\n').filter(Boolean)
+      const stream = new ReadableStream({
+        async start(controller) {
+          for (const line of lines) {
+            if (JSON.parse(line).result) {
+              await new Promise<void>(resolve => {
+                (window as Window & { releaseSyntheticResult?: () => void }).releaseSyntheticResult = resolve
+              })
+            }
+            await new Promise(resolve => setTimeout(resolve, 250))
+            // Also exercise partial UTF-8 / JSON chunks in the client parser.
+            const bytes = new TextEncoder().encode(line + '\n')
+            controller.enqueue(bytes.slice(0, 7))
+            controller.enqueue(bytes.slice(7))
+          }
+          controller.close()
+        },
+      })
+      return new Response(stream, { headers: response.headers })
+    }
+  })
+  let calls = 0
+  const dialog = await spotifyPreview(page)
+  const result = analysisWithoutLastFmFixture()
+  result.analysis_id = 'spotify-account-preview'
+  result.playlist.name = 'Synthetic Spotify Analysis'
+  result.report.playlist_name = 'Synthetic Spotify Analysis'
+  result.report.source_label = 'Spotify 官方账号歌单'
+  result.playlist.source = 'Spotify 官方账号歌单'
+  await page.route('**/api/imports/*/analyze', async route => {
+    calls++
+    expect(route.request().method()).toBe('POST')
+    expect(new URL(route.request().url()).pathname).toBe('/api/imports/spotify-account-preview/analyze')
+    await route.fulfill({ contentType: 'application/x-ndjson', body: [
+      { phase: 'metadata' }, { phase: 'recommendation' }, { result },
+    ].map(event => JSON.stringify(event) + '\n').join('') })
+  })
+  expect(calls).toBe(0)
+  await dialog.getByRole('button', { name: 'Confirm Import · 确认并分析' }).click()
+  await expect(dialog.getByRole('status')).toContainText('Analyzing metadata...')
+  await expect(dialog.getByRole('button', { name: '分析中…' })).toBeDisabled()
+  await expect(dialog.getByRole('status')).toContainText('Generating recommendation...')
+  await page.evaluate(() => (window as Window & { releaseSyntheticResult?: () => void }).releaseSyntheticResult?.())
+  await expect(page).toHaveURL(/\/analysis$/)
+  await expect(page.getByRole('heading', { name: 'Synthetic Spotify Analysis', exact: true })).toBeVisible()
+  expect(calls).toBe(1)
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await page.getByRole('button', { name: '探索推荐', exact: true }).click()
+  await expect(page).toHaveURL(/\/discover$/)
+  await expect(page.locator('.lastfm-readiness')).toContainText('Last.fm Recommendation Service Not Configured')
+  await page.goBack()
+  await expect(page).toHaveURL(/\/analysis$/)
+  await expect(page.getByRole('heading', { name: 'Synthetic Spotify Analysis', exact: true })).toBeVisible()
+})
+
+for (const failure of ['expired', 'server', 'network', 'truncated', 'missing-id'] as const) {
+  test(`Spotify ${failure} preserves preview, shows error and allows retry`, async ({ page }) => {
+    const dialog = await spotifyPreview(page, failure === 'missing-id')
+    let calls = 0
+    await page.route('**/api/imports/*/analyze', route => {
+      calls++
+      if (failure === 'network') return route.abort()
+      if (failure === 'truncated') return route.fulfill({ contentType: 'application/x-ndjson', body: '{"phase":"metadata"}\n' })
+      return route.fulfill({ status: failure === 'expired' ? 404 : 500, json: { error: failure === 'expired' ? '导入预览不存在或服务已重启，请重新解析' : 'Synthetic analysis failure' } })
+    })
+    const confirm = dialog.getByRole('button', { name: 'Confirm Import · 确认并分析' })
+    await confirm.click()
+    await expect(dialog.getByRole('alert')).toContainText(failure === 'missing-id' ? '缺少 import_id' : '分析失败')
+    await expect(dialog).toContainText('Synthetic Song')
+    await expect(confirm).toBeEnabled()
+    await expect(page).toHaveURL(/\/$/)
+    expect(calls).toBe(failure === 'missing-id' ? 0 : 1)
+    if (failure !== 'missing-id') {
+      await page.route('**/api/imports/*/analyze', route => route.fulfill({ json: analysisWithoutLastFmFixture() }))
+      await confirm.click()
+      await expect(page).toHaveURL(/\/analysis$/)
+    } else {
+      await dialog.getByRole('button', { name: '返回重选' }).click()
+      await expect(dialog.getByRole('heading')).toContainText('选择可访问的歌单')
+    }
+  })
+}

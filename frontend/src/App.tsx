@@ -6,14 +6,14 @@ import type { AgentDecision, AgentPlan, AgentSettings, AgentTask, AlternateVersi
 
 type Tab = 'home' | 'taste' | 'recommend' | 'compare' | 'versions' | 'transfer' | 'agent' | 'history' | 'settings'
 type ExportTarget = { platform: string; tracks: Track[]; label: string }
-type ImportProgress = { phase: 'reading' | 'parsing' | 'metadata'; total: number }
+type ImportProgress = { phase: 'reading' | 'parsing' | 'metadata' | 'recommendation'; total: number }
 
 const navItems: { id: Tab; label: string }[] = [
   { id: 'home', label: '开始' }, { id: 'taste', label: '品味地图' }, { id: 'recommend', label: '探索推荐' },
   { id: 'compare', label: '好友桥梁' }, { id: 'versions', label: '版本雷达' }, { id: 'transfer', label: '跨平台复制' }, { id: 'agent', label: 'Agent 运行' }, { id: 'history', label: '历史' }, { id: 'settings', label: '设置' },
 ]
 
-function tabForPath(path: string): Tab { if (path === '/discover') return 'recommend'; if (path === '/agent') return 'agent'; if (path === '/compare') return 'compare'; if (path === '/versions') return 'versions'; if (path === '/transfer') return 'transfer'; return 'home' }
+function tabForPath(path: string): Tab { if (path === '/analysis') return 'taste'; if (path === '/discover') return 'recommend'; if (path === '/agent') return 'agent'; if (path === '/compare') return 'compare'; if (path === '/versions') return 'versions'; if (path === '/transfer') return 'transfer'; return 'home' }
 
 export default function App() {
   const [tab, setTab] = useState<Tab>(() => tabForPath(window.location.pathname))
@@ -52,7 +52,7 @@ export default function App() {
     if (menuOpen) menuButton.current?.focus()
     setMenuOpen(false)
     setTab(next)
-    const path = next === 'recommend' ? '/discover' : next === 'agent' ? '/agent' : next === 'compare' ? '/compare' : next === 'versions' ? '/versions' : next === 'transfer' ? '/transfer' : '/'
+    const path = next === 'taste' ? '/analysis' : next === 'recommend' ? '/discover' : next === 'agent' ? '/agent' : next === 'compare' ? '/compare' : next === 'versions' ? '/versions' : next === 'transfer' ? '/transfer' : '/'
     if (window.location.pathname !== path) window.history.pushState({}, '', path)
   }
 
@@ -106,7 +106,7 @@ export default function App() {
   const openExport = (platform: string, tracks: Track[], label: string) => setExportTarget({ platform, tracks, label })
   const activePersonal = dataState === 'DEMO'
     ? demo?.personal ?? null
-    : dataState === 'REAL_FILE' || dataState === 'REAL_TEXT' || dataState === 'REAL_PUBLIC_LINK'
+    : dataState === 'REAL_FILE' || dataState === 'REAL_TEXT' || dataState === 'REAL_PUBLIC_LINK' || dataState === 'REAL_ACCOUNT'
       ? manualPersonal
       : null
 
@@ -124,7 +124,7 @@ export default function App() {
     <main>
       {[...new Set(connectionErrors)].map(message => <p className="error-box" role="alert" key={message}>{message}</p>)}
       {oauthNotice && <div role={oauthNotice.ok ? 'status' : 'alert'} aria-live="polite" className={oauthNotice.ok ? 'success-box oauth-notice' : 'error-box oauth-notice'}>{oauthNotice.message}<button className="text-button" onClick={() => setOauthNotice(null)}>关闭</button></div>}
-      {tab === 'home' && <Home demo={demo} capabilities={capabilities} spotify={spotify} youtube={youtube} onRefreshConnections={refreshConnections} onDemo={() => { setManualPersonal(null); setDataState('DEMO'); navigate('taste') }} onManual={(personal, state) => { setManualPersonal(personal); setDataState(state); navigate('taste') }} onImportError={() => { setManualPersonal(null); setDataState('ERROR') }} onCompare={() => navigate('compare')} onTransfer={() => navigate('transfer')} onAgent={() => navigate('agent')} onVersions={() => navigate('versions')} onDiscover={() => activePersonal ? navigate('recommend') : document.getElementById('more-import')?.scrollIntoView({ behavior: 'smooth' })} onExport={openExport} />}
+      {tab === 'home' && <Home demo={demo} capabilities={capabilities} spotify={spotify} youtube={youtube} onRefreshConnections={refreshConnections} onDemo={() => { setManualPersonal(null); setDataState('DEMO'); navigate('taste') }} onManual={(personal, state) => { setManualPersonal(personal); setDataState(state); navigate('taste'); window.scrollTo({ top: 0 }) }} onImportError={() => { setManualPersonal(null); setDataState('ERROR') }} onCompare={() => navigate('compare')} onTransfer={() => navigate('transfer')} onAgent={() => navigate('agent')} onVersions={() => navigate('versions')} onDiscover={() => activePersonal ? navigate('recommend') : document.getElementById('more-import')?.scrollIntoView({ behavior: 'smooth' })} onExport={openExport} />}
       {tab === 'taste' && activePersonal && <TastePage personal={activePersonal} canExplore={Boolean(activePersonal.recommendation_summary)} spotifyConnected={Boolean(spotify?.connected)} onExplore={() => navigate('recommend')} onExport={openExport} />}
       {tab === 'taste' && !activePersonal && <div className="page-width"><PageIntro eyebrow="Music Profile" title="先导入歌单，了解你的音乐偏好" copy="了解你的音乐风格、常听歌手和偏好。上传文件或粘贴歌曲列表，核对预览并确认后，就能在这里查看音乐画像。" badge="等待导入"/><button className="primary" onClick={() => navigate('home')}>返回首页导入歌单</button></div>}
       {tab === 'recommend' && activePersonal && <RecommendationPage personal={activePersonal} spotifyConnected={Boolean(spotify?.connected)} onExport={openExport} />}
@@ -179,7 +179,7 @@ function Home({ demo, capabilities, spotify, youtube, onRefreshConnections, onDe
   youtube: YouTubeConnectionStatus | null
   onRefreshConnections: () => Promise<void>
   onDemo: () => void
-  onManual: (personal: PersonalAnalysis, state: 'REAL_FILE' | 'REAL_TEXT' | 'REAL_PUBLIC_LINK') => void
+  onManual: (personal: PersonalAnalysis, state: 'REAL_FILE' | 'REAL_TEXT' | 'REAL_PUBLIC_LINK' | 'REAL_ACCOUNT') => void
   onImportError: () => void
   onCompare: () => void
   onTransfer: () => void
@@ -229,7 +229,7 @@ function Home({ demo, capabilities, spotify, youtube, onRefreshConnections, onDe
   const confirmImport = async () => {
     if (!importPreview) return
     setBusy(true); setImportError(''); setImportProgress({ phase: 'metadata', total: importPreview.parsed_count })
-    try { onManual(await api.analyzeImport(importPreview.id), importPreview.data_state) }
+    try { onManual(await api.analyzeImport(importPreview.id, phase => setImportProgress({ phase, total: importPreview.parsed_count })), importPreview.data_state) }
     catch (reason) { onImportError(); setImportError(reason instanceof Error ? reason.message : 'Metadata 分析失败') }
     finally { setBusy(false); setImportProgress(null) }
   }
@@ -317,7 +317,7 @@ function Home({ demo, capabilities, spotify, youtube, onRefreshConnections, onDe
     })()}{linkResult.import_rows && linkResult.import_rows.length > 0 && <details><summary>逐项导入报告 · {linkResult.import_rows.length} 个源条目 / {linkResult.import_rows.filter(row => row.import_status !== 'IMPORTED').length} 个跳过</summary><div className="spotify-track-preview">{linkResult.import_rows.map((row, index) => <div key={index}><strong>{row.track_title ?? '元数据不可用'}</strong><small>{(row.artist ?? []).join(', ') || '艺人缺失'} · {row.duration_ms == null ? '时长未知' : String(row.duration_ms) + ' ms'} · {humanCapability(row.availability)} · {humanCapability(row.import_status)}</small></div>)}</div></details>}{!linkResult.can_analyze && linkResult.capability === 'TRACK_IMPORT_AVAILABLE' && linkResult.preview_tracks.length > 0 && <><div className="link-preview"><span>Import Preview · 共 {linkResult.track_count} 首，展示前 {Math.min(10, linkResult.preview_tracks.length)} 首</span>{linkResult.preview_tracks.slice(0, 10).map((track) => <div key={track.id}><strong>{track.title}</strong><small>{track.artists.join(', ')}</small></div>)}</div><button className="primary" disabled={linkResult.capability !== 'TRACK_IMPORT_AVAILABLE'} onClick={confirmLink}>确认并进入 Copy Playlist 预览</button></>}<small>{linkResult.platform === 'apple_music' && linkResult.capability === 'CONFIG_REQUIRED' ? '普通用户无需申请开发者凭据，可直接使用文件或文本导入。' : humanPlatformText(linkResult.next_step)}</small>{!linkResult.can_analyze && <button className="secondary" onClick={() => { setMoreOpen(true); document.getElementById('more-import')?.scrollIntoView({ behavior: 'smooth' }) }}>导入文件或文本</button>}</div>}{error && <p className="error-box">{error}</p>}<p className="fine-print">网易云仅使用公开 HTML 和官方歌曲页元数据；曲目完整性检查通过后显示实际导入预览。Spotify / YouTube / Apple 官方 API 曲目继续用于确认后的传输。</p></div></section>
 
     <section className="more-import-section" id="more-import"><details open={moreOpen} onToggle={(event) => setMoreOpen(event.currentTarget.open)}><summary><span><strong>上传你的歌单，开始探索你的音乐偏好</strong><small>先由 Rust 可靠解析并预览，确认后才会分析</small></span><b>{moreOpen ? '−' : '+'}</b></summary><div className="fallback-grid"><div className="input-card"><span className="eyebrow">REAL PLAYLIST IMPORT</span><h3>Import · 文件或批量文本</h3><p>✓ CSV / TXT / JSON 文件（也支持 TSV、M3U/M3U8）<br/>✓ 直接粘贴：歌手 - 歌名</p><p className="import-example">例如：<br/>周杰伦 - 晴天<br/>DEAN - instagram</p><p className="fallback-copy">支持自行整理的 CSV、TSV、JSON、TXT、M3U/M3U8；不代表各平台都有官方导出格式。Apple Music Mac 可用“文件 → 资料库 → 导出播放列表 → 文本文件”，或复制歌曲列。中国平台可手动整理“歌手 - 歌名”；不使用需要密码或 Cookie 的导出工具。暂不接收 XML / HTML。</p><label className="field"><span>歌单名称</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><label className="field"><span>批量文本</span><textarea rows={7} value={text} onChange={(event) => setText(event.target.value)} /></label><div className="input-actions"><label className="secondary upload-button">选择真实文件<input type="file" accept=".txt,.csv,.tsv,.json,.m3u,.m3u8" onChange={(event) => { const input = event.currentTarget; const file = input.files?.[0]; input.value = ''; void loadFile(file) }}/></label><button className="primary" onClick={() => void prepareImport({ name, format: 'txt', content: text, data_state: 'REAL_TEXT' })} disabled={busy}>{busy ? '正在解析…' : '解析并预览文本'}</button></div><p className="fine-print">没有导出文件？可以直接粘贴：歌手 - 歌名。也支持“歌名 — 歌手”“歌手 | 歌名”和“歌名 TAB 歌手”；顺序不确定时会要求确认。</p></div><div className="demo-fallback"><span className="demo-badge">DEMO MODE</span><h3>明确体验示例</h3><p>{demo.disclosure}</p><button className="secondary" onClick={onDemo}>体验 Demo</button><div><strong>只有点击本按钮才显示 Demo</strong><span>真实导入失败不会进入这里。</span></div></div></div>{importProgress && <ImportProgressPanel progress={importProgress} seconds={operationSeconds}/>} {importError && <ImportErrorFeedback error={importError}/>} {importPreview && <div ref={(node) => { previewRef.current = node }}><ImportPreviewPanel key={importPreview.id} preview={importPreview} busy={busy} onOrder={(order) => pendingImport && void prepareImport({ ...pendingImport, text_order: order })} onConfirm={() => void confirmImport()} /></div>}</details></section>
-    {spotifyPickerOpen && <SpotifyPlaylistPicker onClose={() => setSpotifyPickerOpen(false)} onExport={onExport} />}
+    {spotifyPickerOpen && <SpotifyPlaylistPicker onClose={() => setSpotifyPickerOpen(false)} onAnalysis={(personal) => onManual(personal, 'REAL_ACCOUNT')} />}
     {youtubePickerOpen && <YouTubePlaylistPicker onClose={() => setYoutubePickerOpen(false)} onExport={onExport} />}
     {configPlatform && <ConfigurationWizard platform={configPlatform} onClose={() => setConfigPlatform(null)} onChecked={onRefreshConnections} />}
   </>
@@ -329,7 +329,7 @@ function estimateImportRows(content: string, format: string) {
 }
 
 function ImportProgressPanel({ progress, seconds }: { progress: ImportProgress; seconds: number }) {
-  const label = progress.phase === 'reading' ? '正在读取文件...' : progress.phase === 'parsing' ? '正在解析歌曲...' : '正在匹配 metadata...'
+  const label = progress.phase === 'reading' ? '正在读取文件...' : progress.phase === 'parsing' ? '正在解析歌曲...' : progress.phase === 'metadata' ? 'Analyzing metadata... · 正在匹配 metadata...' : 'Generating recommendation... · 正在生成推荐'
   const unit = progress.phase === 'reading' ? '个文件' : progress.phase === 'parsing' ? '行' : '首歌曲'
   return <div className="import-operation" role="status" aria-live="polite"><span className="loading-dot"/><div><strong>{label}</strong><span>后端处理中 · 已等待 {seconds} 秒</span></div><b>已提交 {progress.total} / {progress.total} {unit}</b></div>
 }
@@ -404,12 +404,14 @@ function YouTubePlaylistPicker({ onClose, onExport }: { onClose: () => void; onE
   return <div className="modal-backdrop"><section className="export-modal spotify-picker" role="dialog" aria-modal="true"><header className="modal-header"><div><span className="eyebrow">YOUTUBE DATA API · OFFICIAL</span><h2>{result ? '确认导入的曲目' : '选择你拥有的播放列表'}</h2></div><button className="icon-button" onClick={onClose}>×</button></header><div className="spotify-restriction"><strong>合规边界</strong><span>官方 API 数据用于你主动请求的预览、传输和写回，不发送给 LLM，也不计算独立衍生画像。</span></div>{busy && <p>正在读取…</p>}{error && <p className="error-box">{error}</p>}{!busy && !result && <><div className="spotify-playlist-list">{playlists.map((playlist) => <label className={selected.has(playlist.id) ? 'spotify-playlist selected' : 'spotify-playlist'} key={playlist.id}><input type="checkbox" checked={selected.has(playlist.id)} onChange={() => toggle(playlist.id)}/>{playlist.image_url ? <img src={playlist.image_url} alt=""/> : <span className="playlist-placeholder">▶</span>}<span><strong>{playlist.name}</strong><small>{playlist.item_count} 项</small></span><a href={playlist.youtube_url} target="_blank" rel="noreferrer">YouTube ↗</a></label>)}</div><div className="modal-actions"><button className="secondary" onClick={onClose}>取消</button><button className="primary" disabled={!selected.size} onClick={() => void importSelected()}>读取所选播放列表</button></div></>}{result && <><div className="import-summary"><strong>{result.track_count}</strong><span>首条目已清理标题噪声并转换为统一 Track</span></div><p className="policy-box">{result.policy_notice}</p><div className="spotify-track-preview">{result.tracks.slice(0, 10).map((track, index) => <div key={track.id}><span>{index + 1}</span><div><strong>{track.title}</strong><small>{track.artists.join(', ')}</small></div>{track.platform_url && <a href={track.platform_url} target="_blank" rel="noreferrer">YouTube ↗</a>}</div>)}</div><div className="modal-actions"><button className="secondary" onClick={() => setResult(null)}>返回</button><button className="primary" onClick={() => { onExport('youtube', result.tracks, result.playlists.map((p) => p.name).join(' + ')); onClose() }}>预览并创建新的 YouTube 播放列表</button></div></>}</section></div>
 }
 
-function SpotifyPlaylistPicker({ onClose, onExport }: { onClose: () => void; onExport: (platform: string, tracks: Track[], label: string) => void }) {
+function SpotifyPlaylistPicker({ onClose, onAnalysis }: { onClose: () => void; onAnalysis: (analysis: PersonalAnalysis) => void }) {
   const [playlists, setPlaylists] = useState<SpotifyPlaylistSummary[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [result, setResult] = useState<SpotifyImportResult | null>(null)
   const [busy, setBusy] = useState(true)
   const [error, setError] = useState('')
+  const [phase, setPhase] = useState<'importing' | 'metadata' | 'recommendation' | null>(null)
+  const confirming = useRef(false)
 
   useEffect(() => {
     api.spotifyPlaylists().then(setPlaylists).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '读取 Spotify 歌单失败')).finally(() => setBusy(false))
@@ -421,25 +423,42 @@ function SpotifyPlaylistPicker({ onClose, onExport }: { onClose: () => void; onE
     return next
   })
   const importSelected = async () => {
-    setBusy(true); setError('')
+    setBusy(true); setError(''); setPhase('importing')
     try { setResult(await api.importSpotifyPlaylists([...selected])) }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Spotify 歌单读取失败') }
-    finally { setBusy(false) }
+    finally { setBusy(false); setPhase(null) }
+  }
+
+  const confirm = async () => {
+    if (confirming.current || busy || !result) return
+    if (!result.import_preview?.id) {
+      setError('缺少 import_id，请返回重选以生成新的分析预览；确认后端已更新。')
+      return
+    }
+    confirming.current = true
+    setBusy(true); setError(''); setPhase('metadata')
+    try {
+      const analysis = await api.analyzeImport(result.import_preview.id, setPhase)
+      if (!analysis.analysis_id || !analysis.playlist || analysis.playlist.is_demo) throw new Error('分析返回了无效结果，请重试。')
+      onAnalysis(analysis)
+    } catch (reason) {
+      setError(reason instanceof Error ? `分析失败：${reason.message}` : '分析失败，请检查后端后重试。')
+    } finally { confirming.current = false; setBusy(false); setPhase(null) }
   }
 
   return <div className="modal-backdrop"><section className="export-modal spotify-picker spotify-picker-fixed" role="dialog" aria-modal="true" aria-label="选择 Spotify 歌单">
-    <header className="modal-header"><div><span className="eyebrow">SPOTIFY · OFFICIAL API</span><h2>{result ? 'Import Preview · 确认导入的曲目' : '选择可访问的歌单'}</h2></div><button className="icon-button" aria-label="关闭歌单选择" onClick={onClose}>×</button></header>
+    <header className="modal-header"><div><span className="eyebrow">SPOTIFY · OFFICIAL API</span><h2>{result ? 'Import Preview · 确认导入的曲目' : '选择可访问的歌单'}</h2></div><button className="icon-button" aria-label="关闭歌单选择" disabled={busy} onClick={onClose}>×</button></header>
     <div className="picker-body">
-      <p className="spotify-restriction">只读取主动选择的歌单用于传输；不会进入 LLM、画像或推荐计算。</p>
-      {busy && <p role="status">正在通过 Spotify 官方 API 读取…</p>}
+      <p className="spotify-restriction">确认后分析所选歌单并生成推荐；Spotify 来源标识会保留，数据不会发送给 LLM。</p>
+      {busy && <p role="status" aria-live="polite">{phase === 'importing' ? 'Importing... · 正在读取歌单' : phase === 'metadata' ? 'Analyzing metadata... · 正在分析元数据' : phase === 'recommendation' ? 'Generating recommendation... · 正在生成推荐' : '正在读取可选歌单…'}</p>}
       {error && <p className="error-box" role="alert">{error}</p>}
       {!result && <div className="spotify-playlist-list" aria-label="可访问的 Spotify 歌单">{playlists.map((playlist) => <label className={selected.has(playlist.id) ? 'spotify-playlist selected' : 'spotify-playlist'} key={playlist.id}>
         <input type="checkbox" disabled={busy} checked={selected.has(playlist.id)} onChange={() => toggle(playlist.id)}/>{playlist.image_url ? <img src={playlist.image_url} alt=""/> : <span className="playlist-placeholder">♫</span>}
         <span><strong>{playlist.name}</strong><small>{playlist.owner_name} · {playlist.track_count} 首{playlist.collaborative ? ' · 协作歌单' : ''}</small></span>{playlist.spotify_url && <a href={playlist.spotify_url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Spotify ↗</a>}
       </label>)}{!busy && playlists.length === 0 && <p className="empty-row">当前没有 API 可访问的歌单，请检查账号权限。</p>}</div>}
-      {result && <div className="picker-preview-body"><div className="import-summary"><strong>{result.track_count}</strong><span>首真实 API 曲目</span></div><p className="policy-box">{result.policy_notice}</p><div className="spotify-track-preview">{result.tracks.slice(0, 10).map((track) => <div key={track.id}><strong>{track.title}</strong><small>{track.artists.join(', ')}</small>{track.platform_url && <a href={track.platform_url} target="_blank" rel="noreferrer">Spotify ↗</a>}</div>)}</div><p>{result.attribution}</p></div>}
+      {result && <div className="picker-preview-body"><div className="import-summary"><strong>{result.track_count}</strong><span>首真实 API 曲目</span></div><div className="spotify-track-preview">{result.tracks.slice(0, 10).map((track) => <div key={track.id}><strong>{track.title}</strong><small>{track.artists.join(', ')}</small>{track.platform_url && <a href={track.platform_url} target="_blank" rel="noreferrer">Spotify ↗</a>}</div>)}</div><p>{result.attribution}</p></div>}
     </div>
-    <footer className="modal-actions picker-footer"><span aria-live="polite">已选择 {selected.size} 个歌单</span><button className="secondary" onClick={onClose}>取消</button>{result ? <><button className="secondary" onClick={() => setResult(null)}>返回重选</button><button className="primary" disabled={busy || result.tracks.length === 0} onClick={() => { onExport('spotify', result.tracks, result.playlists.map((playlist) => playlist.name).join(' + ')); onClose() }}>Continue · 进入写入预览</button></> : <button className="primary" disabled={selected.size === 0 || busy} onClick={() => void importSelected()}>确认选择 / Continue</button>}</footer>
+    <footer className="modal-actions picker-footer"><span aria-live="polite">已选择 {selected.size} 个歌单</span><button className="secondary" disabled={busy} onClick={onClose}>取消</button>{result ? <><button className="secondary" disabled={busy} onClick={() => { setResult(null); setError('') }}>返回重选</button><button className="primary" disabled={busy || result.tracks.length === 0} onClick={() => void confirm()}>{busy ? '分析中…' : 'Confirm Import · 确认并分析'}</button></> : <button className="primary" disabled={selected.size === 0 || busy} onClick={() => void importSelected()}>确认选择 / Continue</button>}</footer>
   </section></div>
 
 }

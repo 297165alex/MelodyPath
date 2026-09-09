@@ -298,7 +298,8 @@ async fn preview_import(
 async fn analyze_import(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<models::PersonalDemo>, ApiError> {
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let imported = state
         .imports
         .read()
@@ -306,6 +307,44 @@ async fn analyze_import(
         .get(&id)
         .cloned()
         .ok_or_else(|| ApiError::not_found("导入预览不存在或服务已重启，请重新解析"))?;
+    if imported.requires_column_confirmation || imported.tracks.is_empty() {
+        return Err(ApiError::bad_request("请先完成有效歌曲的导入预览和列确认"));
+    }
+    if headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()) == Some("application/x-ndjson") {
+        let stream = async_stream::stream! {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let analysis = state.metadata.analyze_imported_with_progress(
+                imported.name, imported.source_label, imported.data_state,
+                imported.total_rows, imported.tracks,
+                move |phase| { let _ = tx.send(phase); },
+            );
+            tokio::pin!(analysis);
+            loop {
+                tokio::select! {
+                    Some(phase) = rx.recv() => {
+                        yield Ok::<_, Infallible>(format!("{}\n", serde_json::json!({ "phase": phase })));
+                    }
+                    mut result = &mut analysis => {
+                        while let Ok(phase) = rx.try_recv() {
+                            yield Ok(format!("{}\n", serde_json::json!({ "phase": phase })));
+                        }
+                        result.analysis_id = id.clone();
+                        state.analyses.write().await.insert(id, result.clone());
+                        yield Ok(format!("{}\n", serde_json::json!({ "result": result })));
+                        break;
+                    }
+                }
+            }
+        };
+        return Ok((
+            [
+                (header::CONTENT_TYPE, "application/x-ndjson"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            Body::from_stream(stream),
+        )
+            .into_response());
+    }
     let mut analysis = state
         .metadata
         .analyze_imported(
@@ -322,7 +361,7 @@ async fn analyze_import(
         .write()
         .await
         .insert(analysis.analysis_id.clone(), analysis.clone());
-    Ok(Json(analysis))
+    Ok(Json(analysis).into_response())
 }
 
 async fn compare_analyses(
@@ -1382,20 +1421,43 @@ async fn spotify_playlists(
     ))
 }
 
+#[derive(Serialize)]
+struct SpotifyImportResponse {
+    #[serde(flatten)]
+    result: models::SpotifyImportResult,
+    import_preview: models::ImportPreview,
+}
+
 async fn spotify_import(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<SpotifyImportRequest>,
-) -> Result<Json<models::SpotifyImportResult>, ApiError> {
+) -> Result<Json<SpotifyImportResponse>, ApiError> {
     let session = auth_session(&headers)
         .ok_or_else(|| ApiError::unauthorized("请先通过 Spotify 官方页面授权"))?;
-    Ok(Json(
-        state
-            .spotify
-            .import_playlists(&request.playlist_ids, Some(&session))
-            .await
-            .map_err(|error| ApiError::bad_request(error.to_string()))?,
-    ))
+    let result = state
+        .spotify
+        .import_playlists(&request.playlist_ids, Some(&session))
+        .await
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    register_spotify_import(&state, result).await.map(Json)
+}
+
+async fn register_spotify_import(
+    state: &AppState,
+    result: models::SpotifyImportResult,
+) -> Result<SpotifyImportResponse, ApiError> {
+    let stored = import::StoredImport::from_spotify(&result).map_err(ApiError::bad_request)?;
+    let import_preview = stored.preview();
+    state
+        .imports
+        .write()
+        .await
+        .insert(stored.id.clone(), stored);
+    Ok(SpotifyImportResponse {
+        result,
+        import_preview,
+    })
 }
 
 async fn spotify_disconnect(
@@ -2068,7 +2130,11 @@ mod tests {
     use tower::ServiceExt;
 
     async fn test_app() -> Router {
-        app(AppState {
+        app(test_state().await)
+    }
+
+    async fn test_state() -> AppState {
+        AppState {
             previews: Arc::new(RwLock::new(HashMap::new())),
             downloads: Arc::new(RwLock::new(HashMap::new())),
             spotify: SpotifyPlaylistWriter::new(),
@@ -2081,7 +2147,134 @@ mod tests {
             imports: Arc::new(RwLock::new(HashMap::new())),
             transfer_previews: Arc::new(RwLock::new(HashMap::new())),
             transfer_runs: Arc::new(StdRwLock::new(HashMap::new())),
-        })
+        }
+    }
+
+    fn synthetic_spotify_result(count: usize) -> models::SpotifyImportResult {
+        let track: models::Track = serde_json::from_value(serde_json::json!({
+            "id": "synthetic-source", "title": "Source Pop Song", "normalized_title": "source pop song",
+            "artists": ["Source Artist"], "genres": [], "platform": "spotify",
+            "platform_url": "https://open.spotify.com/track/synthetic",
+            "duration_ms": 180000, "external_ids": {}, "version_type": "original",
+            "mood_tags": [], "metadata_confidence": 0.8
+        })).unwrap();
+        models::SpotifyImportResult {
+            playlists: vec![models::SpotifyImportedPlaylist {
+                id: "synthetic-playlist".into(),
+                name: "Synthetic Spotify".into(),
+                spotify_url: None,
+                imported_count: count,
+            }],
+            tracks: vec![track; count],
+            track_count: count,
+            data_use: models::DataUseCapabilities::unavailable("Synthetic test"),
+            policy_notice: "Synthetic test".into(),
+            attribution: "Synthetic test".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn spotify_preview_registration_and_confirmed_analysis_stream_preserve_origin() {
+        let mut state = test_state().await;
+        state.metadata = metadata::MetadataService::synthetic_import_pipeline();
+        let response = register_spotify_import(&state, synthetic_spotify_result(1))
+            .await
+            .unwrap();
+        let id = response.import_preview.id;
+        assert_eq!(
+            response.import_preview.data_state,
+            models::DataState::RealAccount
+        );
+        assert!(state.imports.read().await.contains_key(&id));
+        assert!(
+            state.analyses.read().await.is_empty(),
+            "preview must not start analysis"
+        );
+        let router = app(state.clone());
+        for accept in ["application/x-ndjson", "application/json"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(format!("/api/imports/{id}/analyze"))
+                        .header("accept", accept)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+            let result: models::PersonalDemo = if accept == "application/x-ndjson" {
+                let events: Vec<serde_json::Value> = std::str::from_utf8(&body)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+                assert_eq!(events[0]["phase"], "metadata");
+                assert_eq!(events[1]["phase"], "recommendation");
+                serde_json::from_value(events[2]["result"].clone()).unwrap()
+            } else {
+                serde_json::from_slice(&body).unwrap()
+            };
+            assert_eq!(result.analysis_id, id);
+            assert_eq!(
+                result.import_summary.unwrap().data_state,
+                models::DataState::RealAccount
+            );
+            assert!(
+                result.playlist.source.contains("Spotify"),
+                "Agent LLM guard depends on provenance"
+            );
+            assert!(!result.playlist.is_demo);
+            assert_eq!(
+                result.metadata_resolutions[0].source.as_deref(),
+                Some("Synthetic resolver")
+            );
+            assert_eq!(result.recommendations.len(), 1);
+            assert!(state.analyses.read().await.contains_key(&id));
+        }
+    }
+
+    #[tokio::test]
+    async fn spotify_preview_keeps_full_track_list_and_rejects_empty_import() {
+        let state = test_state().await;
+        let response = register_spotify_import(&state, synthetic_spotify_result(25))
+            .await
+            .unwrap();
+        assert_eq!(response.import_preview.preview_tracks.len(), 20);
+        assert_eq!(
+            state.imports.read().await[&response.import_preview.id]
+                .tracks
+                .len(),
+            25
+        );
+        assert!(
+            register_spotify_import(&state, synthetic_spotify_result(0))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_import_id_returns_explicit_error_before_streaming() {
+        let response = test_app()
+            .await
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/imports/expired-synthetic-id/analyze")
+                    .header("accept", "application/x-ndjson")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(error["error"].as_str().unwrap().contains("重新解析"));
     }
 
     #[tokio::test]

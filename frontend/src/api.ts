@@ -9,6 +9,41 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
+async function analyzeImport(id: string, onProgress?: (phase: 'metadata' | 'recommendation') => void): Promise<PersonalAnalysis> {
+  if (!id) throw new Error('缺少 import_id，请重新选择歌单生成预览。')
+  if (!onProgress) return request<PersonalAnalysis>(`/api/imports/${encodeURIComponent(id)}/analyze`, { method: 'POST' })
+  const response = await fetch(`/api/imports/${encodeURIComponent(id)}/analyze`, {
+    method: 'POST', credentials: 'include', headers: { Accept: 'application/x-ndjson' },
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new Error(body.error ?? `分析失败：HTTP ${response.status}`)
+  }
+  // Retain compatibility with servers returning the existing JSON contract.
+  if (!response.headers.get('content-type')?.includes('application/x-ndjson')) return response.json()
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('分析响应为空，请重试。')
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      buffer += decoder.decode(value, { stream: !done })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      if (done && buffer.trim()) lines.push(buffer)
+      for (const line of lines) {
+        if (!line.trim()) continue
+        const event = JSON.parse(line)
+        if (event.error) throw new Error(event.error)
+        if (event.phase === 'metadata' || event.phase === 'recommendation') onProgress(event.phase)
+        if (event.result?.analysis_id && event.result?.playlist) return event.result as PersonalAnalysis
+      }
+      if (done) throw new Error('分析连接中断，未收到完整结果。预览已保留，请重试。')
+    }
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
+}
+
 export const api = {
   demo: () => request<DemoPayload>('/api/demo'),
   statuses: () => request<WriterStatus[]>('/api/writers/status'),
@@ -37,7 +72,7 @@ export const api = {
   previewImport: (input: ImportPreviewRequest) => request<ImportPreview>('/api/imports/preview', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input),
   }),
-  analyzeImport: (id: string) => request<PersonalAnalysis>(`/api/imports/${id}/analyze`, { method: 'POST' }),
+  analyzeImport,
   compareAnalyses: (analysisA: PersonalAnalysis, analysisB: PersonalAnalysis) => request<ComparisonReport>('/api/compare', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ analysis_a: analysisA, analysis_b: analysisB, save_locally: false }),
   }),

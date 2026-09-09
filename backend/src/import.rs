@@ -59,6 +59,55 @@ pub struct StoredImport {
 }
 
 impl StoredImport {
+    /// Preserve the server-read account origin; never relabel API tracks as files.
+    pub fn from_spotify(result: &crate::models::SpotifyImportResult) -> Result<Self, String> {
+        if result.tracks.is_empty() {
+            return Err("Spotify 歌单没有可分析的歌曲，请返回重选".into());
+        }
+        Ok(Self {
+            id: Uuid::new_v4().to_string(),
+            name: result
+                .playlists
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(" + "),
+            file_name: None,
+            data_state: DataState::RealAccount,
+            source_label: "Spotify 官方账号歌单".into(),
+            total_rows: result.tracks.len(),
+            invalid_count: 0,
+            detected_fields: vec![
+                "title".into(),
+                "artist".into(),
+                "album".into(),
+                "duration_ms".into(),
+            ],
+            requires_column_confirmation: false,
+            text_order: "artist_title".into(),
+            questions: vec![],
+            tracks: result
+                .tracks
+                .iter()
+                .map(|track| ImportedTrack {
+                    title: track.title.clone(),
+                    artists: track.artists.clone(),
+                    album: track.album.clone(),
+                    release_date: None,
+                    genres: vec![],
+                    duration_ms: track.duration_ms,
+                    energy_score: None,
+                    source: "spotify".into(),
+                    source_url: track.platform_url.clone(),
+                    original_row: format!("{} - {}", track.artists.join(" / "), track.title),
+                    metadata_status: MetadataStatus::Partial,
+                    metadata_confidence: track.metadata_confidence,
+                    warnings: vec![],
+                })
+                .collect(),
+        })
+    }
+
     /// Server-created public metadata, never client-supplied platform API content.
     pub fn from_netease(result: &crate::models::PlaylistLinkInspection) -> Option<Self> {
         if result.platform.as_deref() != Some("netease")
