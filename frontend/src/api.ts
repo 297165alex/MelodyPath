@@ -1,4 +1,4 @@
-import type { AgentSettings, AgentTask, AlternateVersionSearchResult, AppleMusicBootstrap, ComparisonReport, DemoPayload, ExportPreview, ExportResult, ImportPreview, ImportPreviewRequest, PlatformCapability, PlaylistLinkInspection, ProviderConfigurationStatus, SpotifyConnectionStatus, SpotifyImportResult, SpotifyPlaylistSummary, PersonalAnalysis, Track, TransferPreview, TransferResult, TransferRun, VersionType, WriterStatus, YouTubeConnectionStatus, YouTubeImportResult, YouTubePlaylistSummary } from './types'
+import type { AgentSettings, AgentTask, AlternateVersionSearchResult, AppleMusicBootstrap, ComparisonReport, DemoPayload, ExportPreview, ExportResult, ImportPreview, ImportPreviewRequest, PlatformCapability, PlaylistLinkInspection, ProviderConfigurationStatus, SpotifyConnectionStatus, SpotifyAnalysisPreview, SpotifyImportResult, SpotifyPlaylistSummary, PersonalAnalysis, Track, TransferPreview, TransferResult, TransferRun, VersionType, WriterStatus, YouTubeConnectionStatus, YouTubeImportResult, YouTubePlaylistSummary } from './types'
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, credentials: 'include' })
@@ -44,6 +44,25 @@ async function analyzeImport(id: string, onProgress?: (phase: 'metadata' | 'reco
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
 }
 
+async function previewSpotifyImport(playlistIds: string[]): Promise<SpotifyAnalysisPreview> {
+  const response = await fetch('/api/imports/spotify/preview', {
+    method: 'POST', credentials: 'include',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ playlist_ids: playlistIds }),
+  })
+  if (response.status === 404) throw new Error('当前后端未支持 Spotify 分析预览。请重新编译并重启后端，再重新选择歌单。')
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new Error(body.error ?? `Spotify 导入失败：HTTP ${response.status}`)
+  }
+  const preview = await response.json() as SpotifyAnalysisPreview
+  if (typeof preview.import_id !== 'string' || !preview.import_id.trim() || preview.source_platform !== 'spotify') {
+    throw new Error('Spotify 分析预览未关联 StoredImport（缺少有效 import_id 或来源字段）。请更新并重启后端，再重新选择歌单。')
+  }
+  if (!Array.isArray(preview.tracks) || preview.tracks.length === 0) throw new Error('Spotify 歌单没有可分析的歌曲，请返回重选。')
+  if (preview.import_preview && preview.import_preview.id !== preview.import_id) throw new Error('Spotify 预览 ID 不一致，请重新选择歌单。')
+  return preview
+}
+
 export const api = {
   demo: () => request<DemoPayload>('/api/demo'),
   statuses: () => request<WriterStatus[]>('/api/writers/status'),
@@ -51,6 +70,7 @@ export const api = {
   inspectPlaylistLink: (url: string) => request<PlaylistLinkInspection>('/api/playlists/inspect-link', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }),
   }),
+  previewSpotifyImport,
   spotifyMe: () => request<SpotifyConnectionStatus>('/api/spotify/me'),
   spotifyPlaylists: () => request<SpotifyPlaylistSummary[]>('/api/spotify/playlists'),
   importSpotifyPlaylists: (playlistIds: string[]) => request<SpotifyImportResult>('/api/spotify/import', {

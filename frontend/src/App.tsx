@@ -2,7 +2,7 @@ import { readPlaylistFile } from './importFile'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import ExportModal from './ExportModal'
-import type { AgentDecision, AgentPlan, AgentSettings, AgentTask, AlternateVersionSearchResult, BridgeTrack, ComparisonReport, DataState, DemoPayload, ImportPreview, ImportPreviewRequest, PersonalAnalysis, PlatformCapability, PlaylistLinkInspection, ProviderConfigurationStatus, Recommendation, SpotifyConnectionStatus, SpotifyImportResult, SpotifyPlaylistSummary, Track, TransferPreview, TransferResult, TransferRun, VersionType, WriterStatus, YouTubeConnectionStatus, YouTubeImportResult, YouTubePlaylistSummary } from './types'
+import type { AgentDecision, AgentPlan, AgentSettings, AgentTask, AlternateVersionSearchResult, BridgeTrack, ComparisonReport, DataState, DemoPayload, ImportPreview, ImportPreviewRequest, PersonalAnalysis, PlatformCapability, PlaylistLinkInspection, ProviderConfigurationStatus, Recommendation, SpotifyConnectionStatus, SpotifyAnalysisPreview, SpotifyPlaylistSummary, Track, TransferPreview, TransferResult, TransferRun, VersionType, WriterStatus, YouTubeConnectionStatus, YouTubeImportResult, YouTubePlaylistSummary } from './types'
 
 type Tab = 'home' | 'taste' | 'recommend' | 'compare' | 'versions' | 'transfer' | 'agent' | 'history' | 'settings'
 type ExportTarget = { platform: string; tracks: Track[]; label: string }
@@ -407,7 +407,7 @@ function YouTubePlaylistPicker({ onClose, onExport }: { onClose: () => void; onE
 function SpotifyPlaylistPicker({ onClose, onAnalysis }: { onClose: () => void; onAnalysis: (analysis: PersonalAnalysis) => void }) {
   const [playlists, setPlaylists] = useState<SpotifyPlaylistSummary[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [result, setResult] = useState<SpotifyImportResult | null>(null)
+  const [result, setResult] = useState<SpotifyAnalysisPreview | null>(null)
   const [busy, setBusy] = useState(true)
   const [error, setError] = useState('')
   const [phase, setPhase] = useState<'importing' | 'metadata' | 'recommendation' | null>(null)
@@ -423,22 +423,22 @@ function SpotifyPlaylistPicker({ onClose, onAnalysis }: { onClose: () => void; o
     return next
   })
   const importSelected = async () => {
-    setBusy(true); setError(''); setPhase('importing')
-    try { setResult(await api.importSpotifyPlaylists([...selected])) }
+    setBusy(true); setError(''); setResult(null); setPhase('importing')
+    try { setResult(await api.previewSpotifyImport([...selected])) }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Spotify 歌单读取失败') }
     finally { setBusy(false); setPhase(null) }
   }
 
   const confirm = async () => {
     if (confirming.current || busy || !result) return
-    if (!result.import_preview?.id) {
+    if (!result.import_id) {
       setError('缺少 import_id，请返回重选以生成新的分析预览；确认后端已更新。')
       return
     }
     confirming.current = true
     setBusy(true); setError(''); setPhase('metadata')
     try {
-      const analysis = await api.analyzeImport(result.import_preview.id, setPhase)
+      const analysis = await api.analyzeImport(result.import_id, setPhase)
       if (!analysis.analysis_id || !analysis.playlist || analysis.playlist.is_demo) throw new Error('分析返回了无效结果，请重试。')
       onAnalysis(analysis)
     } catch (reason) {

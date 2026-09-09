@@ -311,6 +311,10 @@ export interface SpotifyImportResult {
   policy_notice: string
   attribution: string
 }
+export interface SpotifyAnalysisPreview extends SpotifyImportResult {
+  import_id: string
+  source_platform: 'spotify'
+}
 export interface YouTubeConnectionStatus extends SpotifyConnectionStatus { channel_id?: string; channel_title?: string }
 export interface YouTubePlaylistSummary { id: string; name: string; description: string; item_count: number; youtube_url: string; image_url?: string }
 export interface YouTubeImportResult { playlists: { id: string; name: string; youtube_url: string; imported_count: number }[]; tracks: Track[]; track_count: number; data_use: DataUseCapabilities; policy_notice: string; attribution: string }

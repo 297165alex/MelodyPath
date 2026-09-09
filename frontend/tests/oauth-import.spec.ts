@@ -492,18 +492,21 @@ test('all seven cards disclose credentials and separate real acceptance from fil
 })
 
 
-async function spotifyPreview(page: Page, missingId = false) {
+async function spotifyPreview(page: Page, invalid: 'missing-id' | 'legacy' | 'wrong-source' | 'mismatched-id' | null = null) {
   await setup(page)
   let releaseImport!: () => void
   const imported = new Promise<void>(resolve => { releaseImport = resolve })
-  await page.route('**/api/spotify/import', async route => {
+  await page.route('**/api/imports/spotify/preview', async route => {
     expect(route.request().postDataJSON()).toEqual({ playlist_ids: ['synthetic-0'] })
     await imported
+    if (invalid === 'legacy') return route.fulfill({ status: 404, json: { error: 'Not found' } })
     await route.fulfill({ json: {
+      import_id: invalid === 'missing-id' ? undefined : 'spotify-account-preview',
+      source_platform: invalid === 'wrong-source' ? 'youtube' : 'spotify',
       playlists: [{ id: 'synthetic-0', name: 'Synthetic Spotify', imported_count: 1 }],
       tracks: [{ id: 'synthetic-track', title: 'Synthetic Song', artists: ['Synthetic Artist'] }],
       track_count: 1, attribution: 'Synthetic contract, not real OAuth acceptance',
-      import_preview: missingId ? undefined : { ...importPreviewFixture('spotify-account-preview'), data_state: 'REAL_ACCOUNT', source_label: 'Spotify 官方账号歌单' },
+      import_preview: { ...importPreviewFixture(invalid === 'mismatched-id' ? 'different-preview' : 'spotify-account-preview'), data_state: 'REAL_ACCOUNT', source_label: 'Spotify 官方账号歌单' },
     } })
   })
   await page.goto('/')
@@ -513,7 +516,7 @@ async function spotifyPreview(page: Page, missingId = false) {
   await dialog.getByRole('button', { name: '确认选择 / Continue', exact: true }).click()
   await expect(dialog.getByRole('status')).toContainText('Importing...')
   releaseImport()
-  await expect(dialog.getByRole('heading')).toContainText('Import Preview')
+  if (!invalid) await expect(dialog.getByRole('heading')).toContainText('Import Preview')
   return dialog
 }
 
@@ -580,9 +583,9 @@ test('Spotify select → preview → confirm streams analysis and recommendation
   await expect(page.getByRole('heading', { name: 'Synthetic Spotify Analysis', exact: true })).toBeVisible()
 })
 
-for (const failure of ['expired', 'server', 'network', 'truncated', 'missing-id'] as const) {
+for (const failure of ['expired', 'server', 'network', 'truncated'] as const) {
   test(`Spotify ${failure} preserves preview, shows error and allows retry`, async ({ page }) => {
-    const dialog = await spotifyPreview(page, failure === 'missing-id')
+    const dialog = await spotifyPreview(page)
     let calls = 0
     await page.route('**/api/imports/*/analyze', route => {
       calls++
@@ -592,18 +595,28 @@ for (const failure of ['expired', 'server', 'network', 'truncated', 'missing-id'
     })
     const confirm = dialog.getByRole('button', { name: 'Confirm Import · 确认并分析' })
     await confirm.click()
-    await expect(dialog.getByRole('alert')).toContainText(failure === 'missing-id' ? '缺少 import_id' : '分析失败')
+    await expect(dialog.getByRole('alert')).toContainText('分析失败')
     await expect(dialog).toContainText('Synthetic Song')
     await expect(confirm).toBeEnabled()
     await expect(page).toHaveURL(/\/$/)
-    expect(calls).toBe(failure === 'missing-id' ? 0 : 1)
-    if (failure !== 'missing-id') {
+    expect(calls).toBe(1)
+    {
       await page.route('**/api/imports/*/analyze', route => route.fulfill({ json: analysisWithoutLastFmFixture() }))
       await confirm.click()
       await expect(page).toHaveURL(/\/analysis$/)
-    } else {
-      await dialog.getByRole('button', { name: '返回重选' }).click()
-      await expect(dialog.getByRole('heading')).toContainText('选择可访问的歌单')
     }
+  })
+}
+
+for (const invalid of ['missing-id', 'legacy', 'wrong-source', 'mismatched-id'] as const) {
+  test(`Spotify ${invalid} response cannot become an analyzable preview`, async ({ page }) => {
+    const requests: string[] = []
+    page.on('request', request => requests.push(new URL(request.url()).pathname))
+    const dialog = await spotifyPreview(page, invalid)
+    await expect(dialog.getByRole('alert')).toContainText(invalid === 'legacy' ? '重新编译并重启后端' : invalid === 'mismatched-id' ? '预览 ID 不一致' : '未关联 StoredImport')
+    await expect(dialog.getByRole('heading')).toContainText('选择可访问的歌单')
+    await expect(dialog.getByRole('button', { name: 'Confirm Import · 确认并分析' })).toHaveCount(0)
+    expect(requests.some(path => path === '/api/spotify/import' || path.includes('/analyze') || path.includes('/exports'))).toBe(false)
+    await expect(dialog.getByRole('button', { name: '确认选择 / Continue', exact: true })).toBeEnabled()
   })
 }

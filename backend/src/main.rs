@@ -195,6 +195,7 @@ fn app(state: AppState) -> Router {
         .route("/api/spotify/me", get(spotify_me))
         .route("/api/spotify/playlists", get(spotify_playlists))
         .route("/api/spotify/import", post(spotify_import))
+        .route("/api/imports/spotify/preview", post(spotify_import))
         .route("/api/spotify/disconnect", post(spotify_disconnect))
         .route("/api/youtube/authorize", get(youtube_authorize))
         .route("/api/youtube/callback", get(youtube_callback))
@@ -255,7 +256,7 @@ async fn shutdown_signal() {
 
 async fn health() -> Json<serde_json::Value> {
     Json(
-        serde_json::json!({ "status": "ok", "service": "melody-path-api", "mode": "offline-ready" }),
+        serde_json::json!({ "status": "ok", "service": "melody-path-api", "mode": "offline-ready", "api_contracts": { "spotify_import_preview": 1 } }),
     )
 }
 
@@ -1423,6 +1424,8 @@ async fn spotify_playlists(
 
 #[derive(Serialize)]
 struct SpotifyImportResponse {
+    import_id: String,
+    source_platform: &'static str,
     #[serde(flatten)]
     result: models::SpotifyImportResult,
     import_preview: models::ImportPreview,
@@ -1455,6 +1458,8 @@ async fn register_spotify_import(
         .await
         .insert(stored.id.clone(), stored);
     Ok(SpotifyImportResponse {
+        import_id: import_preview.id.clone(),
+        source_platform: "spotify",
         result,
         import_preview,
     })
@@ -2181,6 +2186,8 @@ mod tests {
             .await
             .unwrap();
         let id = response.import_preview.id;
+        assert_eq!(response.import_id, id);
+        assert_eq!(response.source_platform, "spotify");
         assert_eq!(
             response.import_preview.data_state,
             models::DataState::RealAccount
@@ -2243,6 +2250,10 @@ mod tests {
         let response = register_spotify_import(&state, synthetic_spotify_result(25))
             .await
             .unwrap();
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["import_id"], wire["import_preview"]["id"]);
+        assert_eq!(wire["source_platform"], "spotify");
+        assert_eq!(wire["tracks"].as_array().unwrap().len(), 25);
         assert_eq!(response.import_preview.preview_tracks.len(), 20);
         assert_eq!(
             state.imports.read().await[&response.import_preview.id]
