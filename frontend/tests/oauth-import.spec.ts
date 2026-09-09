@@ -23,7 +23,7 @@ for (const width of [390, 768]) {
     for (const [entry, heading] of [
       ['Music Profile', '先导入歌单，了解你的音乐偏好'],
       ['Compare', '两份真实歌单，一次私密比较'],
-      ['Version Radar', '批量寻找同一首歌的其他正式版本'],
+      ['Version Radar', '发行动态与不同录音版本'],
       ['Agent ·', '从用户请求到工具结果，看清 Agent 的每一步'],
       ['History', '任务不会随页面消失'],
       ['Settings', '模型、预算与运行边界'],
@@ -85,7 +85,7 @@ for (const [platform, capability, access, accessible] of [
     await page.getByRole('button', { name: '检查链接读取能力' }).click()
     const result = page.locator('.link-result')
     await expect(result).toContainText('已识别公开歌单链接')
-    await expect(result).toContainText(platform === 'netease' ? '检测到网易云歌单，但当前无法获取公开歌曲列表。请使用 TXT/CSV 导入。' : '当前无法通过官方接口读取完整歌曲列表')
+    await expect(result).toContainText(platform === 'netease' ? '检测到网易云歌单，但当前无法获取公开歌曲列表。请使用 TXT/CSV 导入。' : 'Playlist recognized but tracks unavailable.')
     await expect(result).toContainText('CSV / TXT / JSON / M3U')
     await expect(result).toContainText('歌手 - 歌名')
     await expect(result).toContainText(accessible === true ? '页面可访问（不代表歌曲已读取）' : accessible === false ? '页面不可访问' : access === 'check_failed' ? '检查失败' : '未检查')
@@ -337,8 +337,8 @@ test('first CSV upload renders Preview immediately and the same file can be sele
   const input = page.locator('#more-import input[type=file]')
   const file = { name: 'same.csv', mimeType: 'text/csv', buffer: Buffer.from('artist,title\n周杰伦,晴天\nIU,Blueming') }
   await input.setInputFiles(file)
-  await expect(page.locator('.import-operation')).toContainText('正在解析歌曲...')
-  await expect(page.locator('.import-operation')).toContainText('已提交 2 / 2 行')
+  await expect(page.locator('.task-progress')).toContainText('Parsing tracks...')
+  await expect(page.locator('.task-progress')).toContainText('2 行已提交')
   const preview = page.locator('.import-preview')
   await expect(preview).toContainText('✅ 歌单解析成功')
   await expect(preview).toContainText('已读取：2 首歌曲')
@@ -424,6 +424,7 @@ test('NetEase partial import uses the existing preview and confirmed analysis fl
   await page.locator('#playlist-link').fill('https://y.music.163.com/m/playlist?id=123')
   await page.getByRole('button', { name: '检查链接读取能力' }).click()
   await expect(page.locator('.link-result')).toContainText('网易云歌单解析成功')
+  await expect(page.locator('.task-progress')).toContainText('Completed')
   await expect(page.locator('.link-result')).toContainText('公开页面仅提供部分歌曲，已导入 2 / 1196 首歌曲')
   await expect(page.locator('.import-preview')).toContainText('Imported 2 / 1196 tracks')
   await expect(page.locator('.import-preview')).toContainText('REAL_PUBLIC_LINK')
@@ -514,7 +515,7 @@ async function spotifyPreview(page: Page, invalid: 'missing-id' | 'legacy' | 'wr
   const dialog = page.getByRole('dialog', { name: '选择 Spotify 歌单' })
   await dialog.getByRole('checkbox').first().check()
   await dialog.getByRole('button', { name: '确认选择 / Continue', exact: true }).click()
-  await expect(dialog.getByRole('status')).toContainText('Importing...')
+  await expect(dialog.getByRole('status')).toContainText('Uploading...')
   releaseImport()
   if (!invalid) await expect(dialog.getByRole('heading')).toContainText('Import Preview')
   return dialog
@@ -562,14 +563,16 @@ test('Spotify select → preview → confirm streams analysis and recommendation
     expect(route.request().method()).toBe('POST')
     expect(new URL(route.request().url()).pathname).toBe('/api/imports/spotify-account-preview/analyze')
     await route.fulfill({ contentType: 'application/x-ndjson', body: [
-      { phase: 'metadata' }, { phase: 'recommendation' }, { result },
+      { phase: 'resolving_metadata' }, { phase: 'analyzing_taste' }, { phase: 'generating_recommendation' }, { phase: 'completed' }, { result },
     ].map(event => JSON.stringify(event) + '\n').join('') })
   })
   expect(calls).toBe(0)
   await dialog.getByRole('button', { name: 'Confirm Import · 确认并分析' }).click()
-  await expect(dialog.getByRole('status')).toContainText('Analyzing metadata...')
+  await expect(dialog.getByRole('status')).toContainText('Resolving metadata...')
   await expect(dialog.getByRole('button', { name: '分析中…' })).toBeDisabled()
   await expect(dialog.getByRole('status')).toContainText('Generating recommendation...')
+  await expect(dialog.getByRole('status')).toContainText('Completed')
+  await expect.poll(() => page.evaluate(() => typeof (window as Window & { releaseSyntheticResult?: () => void }).releaseSyntheticResult === 'function')).toBe(true)
   await page.evaluate(() => (window as Window & { releaseSyntheticResult?: () => void }).releaseSyntheticResult?.())
   await expect(page).toHaveURL(/\/analysis$/)
   await expect(page.getByRole('heading', { name: 'Synthetic Spotify Analysis', exact: true })).toBeVisible()
@@ -590,7 +593,7 @@ for (const failure of ['expired', 'server', 'network', 'truncated'] as const) {
     await page.route('**/api/imports/*/analyze', route => {
       calls++
       if (failure === 'network') return route.abort()
-      if (failure === 'truncated') return route.fulfill({ contentType: 'application/x-ndjson', body: '{"phase":"metadata"}\n' })
+      if (failure === 'truncated') return route.fulfill({ contentType: 'application/x-ndjson', body: '{"phase":"resolving_metadata"}\n' })
       return route.fulfill({ status: failure === 'expired' ? 404 : 500, json: { error: failure === 'expired' ? '导入预览不存在或服务已重启，请重新解析' : 'Synthetic analysis failure' } })
     })
     const confirm = dialog.getByRole('button', { name: 'Confirm Import · 确认并分析' })
@@ -618,5 +621,54 @@ for (const invalid of ['missing-id', 'legacy', 'wrong-source', 'mismatched-id'] 
     await expect(dialog.getByRole('button', { name: 'Confirm Import · 确认并分析' })).toHaveCount(0)
     expect(requests.some(path => path === '/api/spotify/import' || path.includes('/analyze') || path.includes('/exports'))).toBe(false)
     await expect(dialog.getByRole('button', { name: '确认选择 / Continue', exact: true })).toBeEnabled()
+  })
+}
+
+test('multilingual pasted text keeps Unicode and renders normalized Track preview', async ({ page }) => {
+  await setup(page)
+  const rows = [
+    ['晴天', '周杰伦'], ['Sunny Day', 'Jay Chou'], ['夜に駆ける', 'YOASOBI'], ['봄날', 'BTS'],
+  ]
+  await page.route('**/api/imports/preview', route => {
+    expect(route.request().postDataJSON().content).toContain('YOASOBI - 夜に駆ける')
+    return route.fulfill({ json: { ...importPreviewFixture('multilingual'), total_rows: 4, parsed_count: 4, file_name: undefined, data_state: 'REAL_TEXT', preview_tracks: rows.map(([title, artist]) => ({ title, artists: [artist], genres: [], source: 'text', original_row: `${artist} - ${title}`, metadata_status: 'missing', metadata_confidence: 0, warnings: [] })) } })
+  })
+  await page.goto('/')
+  const input = page.locator('#more-import textarea')
+  await input.fill('周杰伦 - 晴天\nJay Chou - Sunny Day\nYOASOBI - 夜に駆ける\nBTS - 봄날')
+  await page.getByRole('button', { name: '解析并预览文本' }).click()
+  await expect(page.locator('.import-preview')).toContainText('夜に駆ける')
+  await expect(page.locator('.import-preview')).toContainText('봄날')
+})
+
+test('Friend Bridge defaults both users to Local file', async ({ page }) => {
+  await setup(page)
+  await page.goto('/compare')
+  const values = await page.locator('.compare-input select').evaluateAll(elements => elements.map(element => (element as HTMLSelectElement).value))
+  expect(values).toEqual(['file', 'file'])
+  await expect(page.getByText('默认输入始终是 Local file')).toBeVisible()
+})
+
+for (const state of ['success', 'empty', 'error'] as const) {
+  test(`Version Radar renders ${state} state without a blank page`, async ({ page }) => {
+    await setup(page)
+    await page.route('**/api/imports/preview', route => route.fulfill({ json: importPreviewFixture(`versions-${state}`) }))
+    await page.route('**/api/imports/*/analyze', route => route.fulfill({ json: analysisWithoutLastFmFixture() }))
+    await page.route('**/api/version-radar/releases', route => route.fulfill({ json: state === 'success' ? {
+      provider: 'MusicBrainz public metadata', status: 'ready', message: 'Found 3 verifiable release updates; 0 artist queries failed.',
+      new_releases: [{ title: 'New EP', artist: 'Synthetic Artist', release_date: '2026-08-01', release_type: 'EP', source_url: 'https://musicbrainz.org/release-group/new' }],
+      upcoming_albums: [{ title: 'Next Album', artist: 'Synthetic Artist', release_date: '2026-12-01', release_type: 'Album', source_url: 'https://musicbrainz.org/release-group/future' }],
+      artist_updates: [{ title: 'Latest', artist: 'Synthetic Artist', release_date: '2026-08-01', release_type: 'Single', source_url: 'https://musicbrainz.org/release-group/latest' }],
+    } : { provider: 'MusicBrainz public metadata', status: state, message: state === 'error' ? 'Release data is temporarily unavailable.' : 'No update available', new_releases: [], upcoming_albums: [], artist_updates: [] } }))
+    await page.goto('/versions')
+    await page.locator('.transfer-source input[type=file]').setInputFiles({ name: 'versions.csv', mimeType: 'text/csv', buffer: Buffer.from('artist,title\nSynthetic Artist,Synthetic Song') })
+    await page.getByRole('button', { name: '检查发行动态' }).click()
+    const radar = page.locator('.release-radar')
+    await expect(radar).toContainText('New releases')
+    await expect(radar).toContainText('Upcoming albums')
+    await expect(radar).toContainText('Artist updates')
+    if (state === 'success') { await expect(radar).toContainText('New EP'); await expect(radar).toContainText('Next Album') }
+    else if (state === 'empty') await expect(radar.getByText('No update available')).toHaveCount(4)
+    else await expect(radar).toContainText('Release data is temporarily unavailable.')
   })
 }

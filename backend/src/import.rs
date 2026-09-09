@@ -4,6 +4,7 @@ use crate::{
 };
 use serde_json::Value;
 use std::collections::HashMap;
+use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 const TITLE_HEADERS: &[&str] = &[
@@ -166,6 +167,64 @@ impl StoredImport {
             tracks,
         })
     }
+
+    pub fn from_public_china(result: &crate::models::PlaylistLinkInspection) -> Option<Self> {
+        let platform = result.platform.as_deref()?;
+        if !matches!(platform, "qq_music" | "kugou")
+            || !result.can_analyze
+            || result.preview_tracks.is_empty()
+        {
+            return None;
+        }
+        let label = result.platform_label.as_deref().unwrap_or(platform);
+        let tracks = result
+            .preview_tracks
+            .iter()
+            .map(|track| ImportedTrack {
+                title: track.title.clone(),
+                artists: track.artists.clone(),
+                album: track.album.clone(),
+                release_date: track.release_year.map(|year| year.to_string()),
+                genres: track.genres.clone(),
+                duration_ms: track.duration_ms,
+                energy_score: track.energy_score,
+                source: platform.into(),
+                source_url: track.platform_url.clone(),
+                original_row: format!("{} - {}", track.artists.join(" / "), track.title),
+                metadata_status: MetadataStatus::Partial,
+                metadata_confidence: track.metadata_confidence,
+                warnings: vec![],
+            })
+            .collect::<Vec<_>>();
+        let total = result.declared_count.unwrap_or(result.visible_count);
+        Some(Self {
+            id: Uuid::new_v4().to_string(),
+            name: result
+                .playlist_name
+                .clone()
+                .unwrap_or_else(|| format!("{label}公开歌单")),
+            file_name: None,
+            data_state: DataState::RealPublicLink,
+            source_label: format!(
+                "{label}公开歌单 · Imported {}/{} tracks",
+                result.imported_count, total
+            ),
+            total_rows: result.visible_count,
+            invalid_count: result.skipped_count,
+            detected_fields: vec![
+                "title".into(),
+                "artist".into(),
+                "album".into(),
+                "duration_ms".into(),
+                "source_platform".into(),
+                "source_url".into(),
+            ],
+            requires_column_confirmation: false,
+            text_order: "artist_title".into(),
+            questions: vec![result.message.clone()],
+            tracks,
+        })
+    }
     pub fn preview(&self) -> ImportPreview {
         ImportPreview {
             id: self.id.clone(),
@@ -193,7 +252,11 @@ pub fn parse_import(mut request: ImportPreviewRequest) -> Result<StoredImport, S
     ) {
         return Err("真实导入只接受 REAL_FILE 或 REAL_TEXT 数据状态".into());
     }
-    request.content = request.content.trim_start_matches('\u{feff}').to_string();
+    request.content = request
+        .content
+        .trim_start_matches('\u{feff}')
+        .nfkc()
+        .collect::<String>();
     if request.content.trim().is_empty() {
         return Err("输入内容为空".into());
     }
@@ -210,20 +273,16 @@ pub fn parse_import(mut request: ImportPreviewRequest) -> Result<StoredImport, S
         .file_name
         .clone()
         .unwrap_or_else(|| "批量文本".into());
-    let text_order = request
-        .text_order
-        .as_deref()
-        .unwrap_or("artist_title")
-        .to_string();
+    let requested_text_order = request.text_order.as_deref().unwrap_or("auto").to_string();
     let mut parsed = match format.as_str() {
         "csv" => parse_delimited(&request.content, b',', &source)?,
         "tsv" => parse_delimited(&request.content, b'\t', &source)?,
         "json" => parse_json(&request.content, &source)?,
-        "m3u" | "m3u8" => parse_m3u(&request.content, &source, &text_order)?,
+        "m3u" | "m3u8" => parse_m3u(&request.content, &source, &requested_text_order)?,
         "txt" | "text" if has_tabular_headers(&request.content) => {
             parse_delimited(&request.content, b'\t', &source)?
         }
-        "txt" | "text" => parse_text(&request.content, &source, &text_order)?,
+        "txt" | "text" => parse_text(&request.content, &source, &requested_text_order)?,
         _ => return Err(format!("不支持的导入格式：{format}")),
     };
     if request.text_order.is_some() {
@@ -264,7 +323,13 @@ pub fn parse_import(mut request: ImportPreviewRequest) -> Result<StoredImport, S
         invalid_count: parsed.invalid_count,
         detected_fields: parsed.detected_fields,
         requires_column_confirmation,
-        text_order,
+        text_order: parsed.inferred_text_order.clone().unwrap_or_else(|| {
+            if requested_text_order == "auto" {
+                "artist_title".into()
+            } else {
+                requested_text_order
+            }
+        }),
         questions,
         tracks: parsed.tracks,
     })
@@ -276,6 +341,7 @@ struct ParseResult {
     invalid_count: usize,
     detected_fields: Vec<String>,
     saw_ambiguous_order: bool,
+    inferred_text_order: Option<String>,
 }
 
 fn has_tabular_headers(content: &str) -> bool {
@@ -385,6 +451,7 @@ fn parse_delimited(content: &str, delimiter: u8, source: &str) -> Result<ParseRe
         invalid_count: invalid,
         detected_fields: headers.iter().map(str::to_string).collect(),
         saw_ambiguous_order: false,
+        inferred_text_order: None,
     })
 }
 
@@ -487,6 +554,7 @@ fn parse_json(content: &str, source: &str) -> Result<ParseResult, String> {
         invalid_count: invalid,
         detected_fields: fields,
         saw_ambiguous_order: false,
+        inferred_text_order: None,
     })
 }
 
@@ -504,7 +572,14 @@ fn parse_m3u(content: &str, source: &str, order: &str) -> Result<ParseResult, St
         } else if !line.is_empty() && !line.starts_with('#') {
             total += 1;
             let label = metadata.take().unwrap_or_else(|| line.to_string());
-            if let Some((title, artists, ambiguous)) = parse_text_fields(&label, order) {
+            if let Some((title, artists, ambiguous)) = parse_text_fields(
+                &label,
+                if order == "auto" {
+                    "artist_title"
+                } else {
+                    order
+                },
+            ) {
                 tracks.push(imported_track(
                     title,
                     artists,
@@ -532,10 +607,29 @@ fn parse_m3u(content: &str, source: &str, order: &str) -> Result<ParseResult, St
         invalid_count: invalid,
         detected_fields: vec!["EXTINF".into(), "path".into()],
         saw_ambiguous_order: false,
+        inferred_text_order: Some(
+            if order == "title_artist" {
+                "title_artist"
+            } else {
+                "artist_title"
+            }
+            .into(),
+        ),
     })
 }
 
 fn parse_text(content: &str, source: &str, order: &str) -> Result<ParseResult, String> {
+    let lines: Vec<_> = content
+        .lines()
+        .map(clean_numbering)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let inferred_order = if order == "auto" {
+        infer_text_order(&lines)
+    } else {
+        Some(order)
+    };
+    let effective_order = inferred_order.unwrap_or("artist_title");
     let mut tracks = Vec::new();
     let mut invalid = 0;
     let mut total = 0;
@@ -546,7 +640,10 @@ fn parse_text(content: &str, source: &str, order: &str) -> Result<ParseResult, S
             continue;
         }
         total += 1;
-        if let Some((title, artists, is_ambiguous)) = parse_text_fields(line, order) {
+        if let Some((title, artists, delimiter_ambiguous)) =
+            parse_text_fields(line, effective_order)
+        {
+            let is_ambiguous = delimiter_ambiguous && inferred_order.is_none();
             ambiguous |= is_ambiguous;
             tracks.push(imported_track(
                 title,
@@ -574,7 +671,120 @@ fn parse_text(content: &str, source: &str, order: &str) -> Result<ParseResult, S
         invalid_count: invalid,
         detected_fields: vec!["title".into(), "artists".into()],
         saw_ambiguous_order: ambiguous,
+        inferred_text_order: inferred_order.map(str::to_string),
     })
+}
+
+fn infer_text_order(lines: &[&str]) -> Option<&'static str> {
+    let pairs: Vec<_> = lines
+        .iter()
+        .filter_map(|line| split_text_pair(line))
+        .collect();
+    if pairs.is_empty() {
+        return None;
+    }
+    let mut left_counts: HashMap<String, usize> = HashMap::new();
+    let mut right_counts: HashMap<String, usize> = HashMap::new();
+    for (left, right, tab) in &pairs {
+        if *tab {
+            continue;
+        }
+        *left_counts
+            .entry(crate::normalize::normalize_text(left))
+            .or_default() += 1;
+        *right_counts
+            .entry(crate::normalize::normalize_text(right))
+            .or_default() += 1;
+    }
+    let mut left_score = 0.0;
+    let mut right_score = 0.0;
+    for (left, right, tab) in pairs {
+        if tab {
+            continue;
+        }
+        left_score += artist_likelihood(
+            left,
+            left_counts
+                .get(&crate::normalize::normalize_text(left))
+                .copied()
+                .unwrap_or(1),
+        );
+        right_score += artist_likelihood(
+            right,
+            right_counts
+                .get(&crate::normalize::normalize_text(right))
+                .copied()
+                .unwrap_or(1),
+        );
+    }
+    if (left_score - right_score).abs() < 1.25 {
+        None
+    } else if left_score > right_score {
+        Some("artist_title")
+    } else {
+        Some("title_artist")
+    }
+}
+
+fn artist_likelihood(value: &str, occurrences: usize) -> f32 {
+    let normalized = crate::normalize::normalize_text(value);
+    let mut score = 0.0;
+    if crate::identity::canonical_artist_name(value) != normalized {
+        score += 3.0;
+    }
+    let latin_letters: Vec<_> = value.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+    if latin_letters.len() >= 2 && latin_letters.iter().all(|c| c.is_ascii_uppercase()) {
+        score += 2.0;
+    }
+    let lower = value.to_lowercase();
+    if [
+        " feat.",
+        " featuring ",
+        " orchestra",
+        " band",
+        " ensemble",
+        "乐队",
+        "樂隊",
+        "组合",
+        "組合",
+        "소년단",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+    {
+        score += 1.5;
+    }
+    if ['&', '、', ';']
+        .iter()
+        .any(|separator| value.contains(*separator))
+    {
+        score += 0.8;
+    }
+    if occurrences > 1 {
+        score += 1.5 + (occurrences.min(4) - 1) as f32 * 0.25;
+    }
+    let words = value.split_whitespace().count();
+    if (1..=4).contains(&words) {
+        score += 0.2;
+    }
+    if value.chars().count() > 48 {
+        score -= 0.8;
+    }
+    score
+}
+
+fn split_text_pair(line: &str) -> Option<(&str, &str, bool)> {
+    if let Some((left, right)) = line.split_once('\t') {
+        return non_empty_pair(left, right).map(|(left, right)| (left, right, true));
+    }
+    for delimiter in [" — ", "—", " – ", "–", " - ", "-", " | ", "|"] {
+        if let Some((left, right)) = line.split_once(delimiter)
+            && let Some((left, right)) = non_empty_pair(left, right)
+        {
+            return Some((left, right, false));
+        }
+    }
+    None
 }
 
 fn parse_text_fields(line: &str, order: &str) -> Option<(String, Vec<String>, bool)> {
@@ -582,12 +792,7 @@ fn parse_text_fields(line: &str, order: &str) -> Option<(String, Vec<String>, bo
         return non_empty_pair(title, artist)
             .map(|(title, artist)| (title.into(), split_artists(artist), false));
     }
-    let pair = line
-        .split_once(" — ")
-        .or_else(|| line.split_once(" – "))
-        .or_else(|| line.split_once(" - "))
-        .or_else(|| line.split_once(" | "))?;
-    let (left, right) = non_empty_pair(pair.0, pair.1)?;
+    let (left, right, _) = split_text_pair(line)?;
     let (artist, title) = if order == "title_artist" {
         (right, left)
     } else {
@@ -826,6 +1031,41 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(m3u.tracks[0].title, "Song");
+    }
+
+    #[test]
+    fn auto_detects_multilingual_artist_title_text_after_unicode_normalization() {
+        let mut req = request(
+            "txt",
+            "周杰伦－晴天\nJay Chou - Sunny Day\nＹＯＡＳＯＢＩ — 夜に駆ける\nBTS - 봄날",
+        );
+        req.text_order = None;
+        let parsed = parse_import(req).unwrap();
+        assert!(!parsed.requires_column_confirmation);
+        assert_eq!(parsed.text_order, "artist_title");
+        assert_eq!(
+            parsed
+                .tracks
+                .iter()
+                .map(|track| track.title.as_str())
+                .collect::<Vec<_>>(),
+            ["晴天", "Sunny Day", "夜に駆ける", "봄날"]
+        );
+        assert_eq!(parsed.tracks[2].artists, ["YOASOBI"]);
+    }
+
+    #[test]
+    fn auto_detects_title_artist_when_artist_evidence_is_on_the_right() {
+        let mut req = request(
+            "txt",
+            "晴天 - 周杰伦\nSunny Day-Jay Chou\n夜に駆ける | YOASOBI\n봄날 – BTS",
+        );
+        req.text_order = None;
+        let parsed = parse_import(req).unwrap();
+        assert!(!parsed.requires_column_confirmation);
+        assert_eq!(parsed.text_order, "title_artist");
+        assert_eq!(parsed.tracks[0].title, "晴天");
+        assert_eq!(parsed.tracks[3].artists, ["BTS"]);
     }
 
     #[test]

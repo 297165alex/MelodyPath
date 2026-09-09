@@ -1,4 +1,6 @@
-import type { AgentSettings, AgentTask, AlternateVersionSearchResult, AppleMusicBootstrap, ComparisonReport, DemoPayload, ExportPreview, ExportResult, ImportPreview, ImportPreviewRequest, PlatformCapability, PlaylistLinkInspection, ProviderConfigurationStatus, SpotifyConnectionStatus, SpotifyAnalysisPreview, SpotifyImportResult, SpotifyPlaylistSummary, PersonalAnalysis, Track, TransferPreview, TransferResult, TransferRun, VersionType, WriterStatus, YouTubeConnectionStatus, YouTubeImportResult, YouTubePlaylistSummary } from './types'
+import type { AgentSettings, AgentTask, AlternateVersionSearchResult, AppleMusicBootstrap, ComparisonReport, DemoPayload, ExportPreview, ExportResult, ImportPreview, ImportPreviewRequest, PlatformCapability, PlaylistLinkInspection, ProviderConfigurationStatus, ReleaseRadarResult, SpotifyConnectionStatus, SpotifyAnalysisPreview, SpotifyImportResult, SpotifyPlaylistSummary, PersonalAnalysis, Track, TransferPreview, TransferResult, TransferRun, VersionType, WriterStatus, YouTubeConnectionStatus, YouTubeImportResult, YouTubePlaylistSummary } from './types'
+
+export type AnalysisPhase = 'resolving_metadata' | 'analyzing_taste' | 'generating_recommendation' | 'completed'
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, credentials: 'include' })
@@ -9,7 +11,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
-async function analyzeImport(id: string, onProgress?: (phase: 'metadata' | 'recommendation') => void): Promise<PersonalAnalysis> {
+async function analyzeImport(id: string, onProgress?: (phase: AnalysisPhase) => void): Promise<PersonalAnalysis> {
   if (!id) throw new Error('缺少 import_id，请重新选择歌单生成预览。')
   if (!onProgress) return request<PersonalAnalysis>(`/api/imports/${encodeURIComponent(id)}/analyze`, { method: 'POST' })
   const response = await fetch(`/api/imports/${encodeURIComponent(id)}/analyze`, {
@@ -36,7 +38,11 @@ async function analyzeImport(id: string, onProgress?: (phase: 'metadata' | 'reco
         if (!line.trim()) continue
         const event = JSON.parse(line)
         if (event.error) throw new Error(event.error)
-        if (event.phase === 'metadata' || event.phase === 'recommendation') onProgress(event.phase)
+        const phaseAliases: Record<string, AnalysisPhase> = {
+          metadata: 'resolving_metadata', analysis: 'analyzing_taste', recommendation: 'generating_recommendation',
+          resolving_metadata: 'resolving_metadata', analyzing_taste: 'analyzing_taste', generating_recommendation: 'generating_recommendation', completed: 'completed',
+        }
+        if (phaseAliases[event.phase]) onProgress(phaseAliases[event.phase])
         if (event.result?.analysis_id && event.result?.playlist) return event.result as PersonalAnalysis
       }
       if (done) throw new Error('分析连接中断，未收到完整结果。预览已保留，请重试。')
@@ -98,6 +104,9 @@ export const api = {
   }),
   searchAlternateVersions: (track: Track, versionTypes: VersionType[], useMock = false) => request<AlternateVersionSearchResult>('/api/alternate-versions/search', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ track, version_types: versionTypes, use_mock: useMock }),
+  }),
+  scanReleaseRadar: (tracks: Track[]) => request<ReleaseRadarResult>('/api/version-radar/releases', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tracks }),
   }),
   previewTransfer: (playlistName: string, tracks: Track[], destinationPlatform: 'spotify' | 'youtube', allowAlternateVersions: boolean, useMock: boolean) => request<TransferPreview>('/api/transfers/preview', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ playlist_name: playlistName, tracks, destination_platform: destinationPlatform, allow_alternate_versions: allowAlternateVersions, use_mock: useMock }),

@@ -11,6 +11,7 @@ mod models;
 mod normalize;
 mod platforms;
 mod recommendation;
+mod release_radar;
 mod resolver;
 mod secure_store;
 mod transfer;
@@ -159,6 +160,7 @@ fn app(state: AppState) -> Router {
             "/api/alternate-versions/search",
             post(search_alternate_versions),
         )
+        .route("/api/version-radar/releases", post(scan_release_radar))
         .route("/api/transfers/preview", post(transfer_preview))
         .route("/api/transfers/execute", post(transfer_execute))
         .route("/api/transfers/runs", post(create_transfer_run))
@@ -427,6 +429,12 @@ async fn search_alternate_versions(
             is_mock: false,
         }),
     }
+}
+
+async fn scan_release_radar(
+    Json(request): Json<release_radar::ReleaseRadarRequest>,
+) -> Json<release_radar::ReleaseRadarResult> {
+    Json(release_radar::scan(request).await)
 }
 
 async fn transfer_preview(
@@ -1233,6 +1241,15 @@ async fn inspect_playlist_link(
         .await
         .map_err(|error| ApiError::bad_request(error.to_string()))?;
     if let Some(stored) = import::StoredImport::from_netease(&result) {
+        result.import_preview = Some(stored.preview());
+        state
+            .imports
+            .write()
+            .await
+            .insert(stored.id.clone(), stored);
+        return Ok(Json(result));
+    }
+    if let Some(stored) = import::StoredImport::from_public_china(&result) {
         result.import_preview = Some(stored.preview());
         state
             .imports
@@ -2219,9 +2236,11 @@ mod tests {
                     .lines()
                     .map(|line| serde_json::from_str(line).unwrap())
                     .collect();
-                assert_eq!(events[0]["phase"], "metadata");
-                assert_eq!(events[1]["phase"], "recommendation");
-                serde_json::from_value(events[2]["result"].clone()).unwrap()
+                assert_eq!(events[0]["phase"], "resolving_metadata");
+                assert_eq!(events[1]["phase"], "analyzing_taste");
+                assert_eq!(events[2]["phase"], "generating_recommendation");
+                assert_eq!(events[3]["phase"], "completed");
+                serde_json::from_value(events[4]["result"].clone()).unwrap()
             } else {
                 serde_json::from_slice(&body).unwrap()
             };

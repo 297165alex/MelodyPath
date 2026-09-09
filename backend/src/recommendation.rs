@@ -851,6 +851,13 @@ pub async fn build_real_recommendations(
         .map(|mut candidate| {
             candidate.track.normalized_title = normalize_text(&candidate.track.title);
             candidate.track.version_type = detect_version(&candidate.track.title);
+            if candidate.track.language.is_none() {
+                candidate.track.language = crate::metadata::infer_language(&format!(
+                    "{} {}",
+                    candidate.track.title,
+                    candidate.track.artists.join(" ")
+                ));
+            }
             candidate
         })
         .collect();
@@ -1640,11 +1647,11 @@ fn candidate_from_track_value(
             id: Uuid::new_v4().to_string(),
             title: title.clone(),
             normalized_title: normalize_text(&title),
-            artists: vec![artist],
+            artists: vec![artist.clone()],
             album: None,
             genres: normalized_genres.clone(),
             release_year: None,
-            language: None,
+            language: crate::metadata::infer_language(&format!("{title} {artist}")),
             duration_ms: None,
             platform: "lastfm".into(),
             platform_url: source_url.clone(),

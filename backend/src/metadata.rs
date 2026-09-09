@@ -159,7 +159,7 @@ impl MetadataService {
         mut imported: Vec<ImportedTrack>,
         progress: impl Fn(&'static str) + Send,
     ) -> PersonalDemo {
-        progress("metadata");
+        progress("resolving_metadata");
         let mut provider_requests = 0;
         let mut resolved_tracks = Vec::with_capacity(imported.len());
         let mut metadata_resolutions = Vec::with_capacity(imported.len());
@@ -231,8 +231,9 @@ impl MetadataService {
             is_demo: false,
             tracks: resolved_tracks,
         };
+        progress("analyzing_taste");
         let report = engine::analyze_playlist(&playlist);
-        progress("recommendation");
+        progress("generating_recommendation");
         let (recommendations, recommendation_summary, route) =
             build_real_recommendations(self.recommendation_provider.as_ref(), &playlist, &report)
                 .await;
@@ -250,7 +251,7 @@ impl MetadataService {
             .cloned()
             .collect();
         let analyzed_count = playlist.tracks.len();
-        PersonalDemo {
+        let result = PersonalDemo {
             analysis_id: Uuid::new_v4().to_string(),
             playlist,
             report: report.clone(),
@@ -273,7 +274,9 @@ impl MetadataService {
             }),
             unmatched_tracks,
             metadata_resolutions,
-        }
+        };
+        progress("completed");
+        result
     }
 
     async fn lookup_itunes(&self, source: &Track) -> Result<Option<ItunesTrack>, reqwest::Error> {
@@ -537,52 +540,52 @@ fn artist_profile(
     let profile = match artist {
         "bibi" | "dean" | "crush" | "heize" | "colde" | "keshi" => (
             &["Korean R&B", "Alternative R&B"][..],
-            "韩语/英语",
+            "ko",
             0.52,
             &["夜色", "细腻"][..],
         ),
         "newjeans" | "ive" | "le sserafim" | "aespa" | "blackpink" | "bts" | "iu" => (
             &["K-Pop", "Dance Pop"][..],
-            "韩语",
+            "ko",
             0.72,
             &["明亮", "律动"][..],
         ),
         "周杰伦" | "jay chou" | "陈奕迅" | "eason chan" | "邓紫棋" | "g e m" | "五月天"
         | "毛不易" => (
             &["Mandopop", "C-Pop"][..],
-            "中文",
+            "zh",
             0.58,
             &["叙事", "怀旧"][..],
         ),
         "宇多田光" | "hikaru utada" | "mariya takeuchi" | "竹内まりや" | "藤井风"
         | "fujii kaze" | "yoasobi" | "aimer" => (
             &["J-Pop", "Japanese R&B"][..],
-            "日语",
+            "ja",
             0.56,
             &["细腻", "都市"][..],
         ),
         "frank ocean" | "daniel caesar" | "sza" | "the weeknd" | "solange" | "masego" => (
             &["R&B / Soul", "Alternative R&B"][..],
-            "英语",
+            "en",
             0.55,
             &["夜色", "柔和"][..],
         ),
         "arctic monkeys" | "the 1975" | "radiohead" | "coldplay" | "the cranberries"
         | "tame impala" => (
             &["Alternative Rock", "Indie Rock"][..],
-            "英语",
+            "en",
             0.69,
             &["张力", "迷幻"][..],
         ),
         "taylor swift" | "dua lipa" | "billie eilish" | "lana del rey" | "olivia rodrigo" => (
             &["Pop", "Singer/Songwriter"][..],
-            "英语",
+            "en",
             0.62,
             &["流行", "叙事"][..],
         ),
         "laufey" => (
             &["Jazz Pop", "Singer/Songwriter"][..],
-            "英语",
+            "en",
             0.39,
             &["温暖", "复古"][..],
         ),
@@ -618,7 +621,7 @@ fn genre_features(genre: &str) -> (Vec<String>, f32) {
     )
 }
 
-fn infer_language(text: &str) -> Option<String> {
+pub(crate) fn infer_language(text: &str) -> Option<String> {
     let mut has_hangul = false;
     let mut has_kana = false;
     let mut has_han = false;
@@ -629,13 +632,13 @@ fn infer_language(text: &str) -> Option<String> {
         has_han |= (0x4E00..=0x9FFF).contains(&code);
     }
     if has_hangul {
-        Some("韩语".into())
+        Some("ko".into())
     } else if has_kana {
-        Some("日语".into())
+        Some("ja".into())
     } else if has_han {
-        Some("中文/日语".into())
+        Some("zh".into())
     } else {
-        Some("英语/其他".into())
+        Some("en".into())
     }
 }
 

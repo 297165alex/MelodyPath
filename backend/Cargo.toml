@@ -10,6 +10,7 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["macros"] }
 base64 = "0.22"
 csv = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 rand = "0.9"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -24,6 +25,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 urlencoding = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
+unicode-normalization = "0.1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

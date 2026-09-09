@@ -25,13 +25,14 @@
 13. 持续验证：Rust 格式/检查/测试、前端 lint/build、HTTP 与浏览器回归、真实凭据手动验收。
 14. 平台无关 Metadata Layer（本轮完成）：MusicBrainz 优先解析、确定性匹配状态与原输入降级；标准 Track 可经独立 Spotify export service 使用既有 OAuth 搜索并在确认后新建私有歌单。
 15. 网易云公开页面条件导入（2026-09-08）：复用 URL 校验，对 HTML 容器与 JSON-LD 一致的公开歌曲前缀有限查询官方歌曲页，最多 20 首；显示实际导入数 / 页面声明总数，接入既有预览、确认、Resolver 与推荐。没有可验证歌曲时保留 ACCESSIBILITY_CHECK_ONLY。
+16. 产品体验收口（2026-09-09）：文件、文本、Spotify、YouTube、中国平台与 Friend Bridge 复用统一 Task Progress；文本解析增加 Unicode 规范化及歌手/歌名顺序推断；Friend Bridge 加入 `zh/en/ja/ko` 语言兼容度；QQ/酷狗仅条件读取公开 JSON-LD；Version Radar 增加 MusicBrainz 发行动态并补齐 loading/error/empty 状态。
 
 ## 风险与边界
 
 - Spotify 真写入依赖用户自行创建应用并提供环境变量；无凭据时不影响 P0。
 - Spotify API 内容受 Developer Policy 限制，只用于用户主动发起的传输/写回，不进入画像、衍生指标或 LLM。
-- Apple Music 当前明确为 Import Only；网易云、QQ音乐、酷狗和酷我只展示 Import Only 或 Partnership Required。任何平台都不模拟登录或使用私有接口。
-- 公开页面可访问不等于曲目完整可读；网易云只为页面明确公开且可核验的歌曲生成预览，不补造未公开成员，QQ 保留可访问性检查。
+- Apple Music 当前明确为 Import Only；QQ音乐和酷狗只在官方公开页面存在可核验 `MusicPlaylist` JSON-LD 时条件导入，汽水仅做能力检测。任何平台都不模拟登录或使用私有接口，也不会在公开曲目缺失时补造歌曲。
+- 公开页面可访问不等于曲目完整可读；网易云、QQ 和酷狗只为页面明确公开且可核验的歌曲生成预览，不补造未公开成员。QQ/酷狗的 JSON-LD 分支只有本地契约测试，尚未完成真实公网样本验收。
 - 本地 OAuth token 通过 Windows DPAPI 用户范围保护；后端仅向浏览器发放不透明 HttpOnly session。生产环境必须为 `OAuthTokenStore` 注入托管密钥/KMS 实现。
 - 离线推荐和元数据是明确标注的 Demo 数据，不宣称为实时平台结果。
 - Transfer Mock 只验证本地流程；只有真实登录 Spotify 与 Google、确认预览并得到可访问的 YouTube 播放列表链接，才能标记真实迁移通过。

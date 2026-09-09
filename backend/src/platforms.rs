@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use reqwest::{Client, Url, redirect::Policy};
 use std::time::Duration;
 
+mod china;
 mod netease;
 mod netease_tracks;
 
@@ -131,7 +132,7 @@ impl PlatformService {
                 auth_supported: false,
                 playlist_read_supported: false,
                 playlist_write_supported: false,
-                public_link_import_supported: false,
+                public_link_import_supported: true,
                 file_import_supported: true,
                 compare_supported: true,
                 transfer_source_supported: true,
@@ -143,7 +144,7 @@ impl PlatformService {
                 playlist_read_for_recommendation: false,
                 alternate_version_search_supported: false,
                 status: "IMPORT_ONLY".into(),
-                reason: "没有可验证的通用官方用户歌单 OAuth；请使用文件或文本导入。".into(),
+                reason: "公开页面如提供完整可验证 JSON-LD 曲目则有限导入，否则仅返回可访问性检查。".into(),
                 display_name: "QQ音乐".into(),
                 region: "中国平台".into(),
                 capability_status: "qualification_required".into(),
@@ -157,7 +158,7 @@ impl PlatformService {
                 configured: false,
                 official_docs_url: Some("https://cloud.tencent.com/document/product/1081/67456".into()),
                 action_kind: "paste_link".into(),
-                description: "可识别公开分享链接并检查页面是否可访问；已核实的官方能力属于受限 SDK/合作场景。".into(),
+                description: "可识别公开分享链接并检查页面；只读取公开 HTML/JSON-LD 中明确给出的曲目，页面壳不会生成歌曲。".into(),
                 policy_notice: Some("未获得正式资格前不提供账号连接、私人歌单读取或写回。".into()),
                 data_use: DataUseCapabilities::unavailable("已发现的官方能力限于腾讯连连 IoT/H5 合作场景。"),
             },
@@ -166,7 +167,7 @@ impl PlatformService {
                 auth_supported: false,
                 playlist_read_supported: false,
                 playlist_write_supported: false,
-                public_link_import_supported: false,
+                public_link_import_supported: true,
                 file_import_supported: true,
                 compare_supported: true,
                 transfer_source_supported: true,
@@ -184,16 +185,16 @@ impl PlatformService {
                 capability_status: "qualification_required".into(),
                 status_label: "需要平台接入资格".into(),
                 account_connection: "official_sdk_only".into(),
-                public_playlist_links: "URL_RECOGNITION_ONLY".into(),
+                public_playlist_links: "ACCESSIBILITY_CHECK_ONLY".into(),
                 playlist_read: "requires_platform_approval".into(),
                 playlist_write: "requires_platform_approval".into(),
-                search_links: false,
+                search_links: true,
                 requires_review: true,
                 configured: false,
                 official_docs_url: Some("https://open.kugou.com/docs".into()),
-                action_kind: "qualification".into(),
-                description: "官方开放平台以 SDK 与商务接入为主，本项目仅保留正式连接器接口。".into(),
-                policy_notice: None,
+                action_kind: "paste_link".into(),
+                description: "识别官方公开歌单页；仅当 HTML/JSON-LD 明确提供标题与艺人时导入，否则保持 ACCESSIBILITY_CHECK_ONLY。".into(),
+                policy_notice: Some("不解码站内状态，不调用私有接口，不使用 Cookie。".into()),
                 data_use: DataUseCapabilities::unavailable("需要酷狗官方 SDK 或商务接入资格。"),
             },
             PlatformCapability {
@@ -423,7 +424,7 @@ impl PlatformService {
             .host_str()
             .is_some_and(|host| host_matches(host, "163cn.tv"))
             && parsed.path().len() > 1;
-        if !matches!(link.platform, "netease" | "qq_music")
+        if !matches!(link.platform, "netease" | "qq_music" | "kugou")
             || (link.playlist_id.is_none() && !official_short_link)
         {
             return Ok(initial);
@@ -440,6 +441,7 @@ impl PlatformService {
         let mut structured_data_status = "not_available".to_string();
         let mut public_metadata = None;
         let mut imported_page = None;
+        let mut china_page = None;
         let (publicly_accessible, access_status, message) = match response {
             Ok(mut response) if response.status().is_success() => {
                 let final_url = response.url().clone();
@@ -496,6 +498,22 @@ impl PlatformService {
                 } else {
                     let prefix = read_body_prefix(&mut response, 256 * 1024).await;
                     structured_data_status = inspect_public_structure(&prefix);
+                    if let (Some(adapter), Some(playlist_id)) = (
+                        china::PublicJsonLdAdapter::for_platform(link.platform),
+                        link.playlist_id.as_deref(),
+                    ) {
+                        use china::ChinaPlatformAdapter;
+                        let page = adapter.parse_public_metadata(
+                            &prefix,
+                            playlist_id,
+                            resolved_url
+                                .as_deref()
+                                .or(link.normalized_url.as_deref())
+                                .unwrap_or(raw),
+                        );
+                        structured_data_status = page.status.into();
+                        china_page = Some(page);
+                    }
                     let structure_note = match structured_data_status.as_str() {
                         "schema_org_playlist_found_policy_unverified" => {
                             "页面含 schema.org 歌单结构，但尚未验证平台条款允许自动导入，因此没有提取曲目。"
@@ -529,6 +547,63 @@ impl PlatformService {
                 "公开页面检查失败，请检查网络或使用本地文件导入；当前不能读取完整曲目。".into(),
             ),
         };
+
+        if let Some(page) = china_page {
+            let tracks = china::into_tracks(&page.raw_tracks);
+            let imported_count = tracks.len();
+            let skipped_count = page
+                .rows
+                .iter()
+                .filter(|row| row.import_status != "IMPORTED")
+                .count();
+            let declared_count = page.declared_count;
+            let unexposed_count = declared_count
+                .unwrap_or(page.visible_count)
+                .saturating_sub(page.visible_count);
+            let partial_import = imported_count < page.visible_count || unexposed_count > 0;
+            let can_analyze = imported_count > 0;
+            let total = declared_count.unwrap_or(page.visible_count);
+            return Ok(PlaylistLinkInspection {
+                import_preview: None,
+                import_rows: page.rows,
+                capability: if can_analyze {
+                    PublicLinkCapability::TrackImportAvailable
+                } else {
+                    PublicLinkCapability::AccessibilityCheckOnly
+                },
+                url_valid: true,
+                playlist_id_valid: link.playlist_id.is_some(),
+                platform: Some(link.platform.into()),
+                platform_label: Some(link.label.into()),
+                recognized: true,
+                playlist_id: link.playlist_id,
+                normalized_url: link.normalized_url,
+                resolved_url,
+                publicly_accessible,
+                access_status,
+                structured_data_status,
+                playlist_name: page.name,
+                declared_count,
+                visible_count: page.visible_count,
+                imported_count,
+                skipped_count,
+                unexposed_count,
+                partial_import,
+                track_count: declared_count,
+                preview_tracks: tracks,
+                can_analyze,
+                message: if can_analyze {
+                    format!("Imported {imported_count}/{total} tracks")
+                } else {
+                    "Playlist recognized but tracks unavailable.".into()
+                },
+                next_step: if can_analyze {
+                    "核对 Import Preview，确认后进入既有 MetadataResolver 与推荐流程。".into()
+                } else {
+                    "ACCESSIBILITY_CHECK_ONLY：请上传 TXT/CSV/JSON/M3U 或粘贴歌曲清单。".into()
+                },
+            });
+        }
 
         let (tracks, rows, visible_count) = imported_page
             .map(|p| (p.tracks, p.rows, p.visible_count))
@@ -726,7 +801,7 @@ fn public_redirect_allowed(target: &Url, previous: &[Url]) -> bool {
         return false;
     };
     source.platform == destination.platform
-        && matches!(source.platform, "netease" | "qq_music")
+        && matches!(source.platform, "netease" | "qq_music" | "kugou")
         && (destination.playlist_id.is_some()
             || (target.host_str() == Some("163cn.tv") && target.path().len() > 1))
 }
@@ -843,12 +918,28 @@ fn recognize_link(raw: &str) -> Result<Option<RecognizedLink>> {
         } else {
             ("qishui", "汽水音乐")
         };
-        // Domain recognition only: no unverified share-token/playlist-ID decoding.
+        let playlist_id =
+            if platform == "kugou" && matches!(host.as_str(), "www.kugou.com" | "m.kugou.com") {
+                let path = url.path().trim_end_matches('/');
+                path.strip_prefix("/songlist/")
+                    .or_else(|| path.strip_prefix("/playlist/"))
+                    .filter(|id| {
+                        (3..=80).contains(&id.len())
+                            && id.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+                            })
+                    })
+                    .map(str::to_string)
+            } else {
+                None
+            };
         return Ok(Some(RecognizedLink {
             platform,
             label,
-            playlist_id: None,
-            normalized_url: None,
+            normalized_url: playlist_id
+                .as_ref()
+                .map(|id| format!("https://www.kugou.com/songlist/{id}/")),
+            playlist_id,
         }));
     }
     Ok(None)
@@ -1026,7 +1117,11 @@ mod tests {
             ),
             ("https://y.qq.com/n/ryqq/playlist/bad", "qq_music", None),
             ("https://www.kugou.com/share/test", "kugou", None),
-            ("https://m.kugou.com/playlist/123456", "kugou", None),
+            (
+                "https://m.kugou.com/playlist/123456",
+                "kugou",
+                Some("123456"),
+            ),
             ("https://qishui.douyin.com/share/test", "qishui", None),
             ("https://qishui.douyin.com/playlist/123456", "qishui", None),
         ] {
@@ -1088,7 +1183,10 @@ mod tests {
                 let item = items.iter().find(|p| p.platform == platform).unwrap();
                 assert_eq!(item.status, "FILE_IMPORT_AVAILABLE");
                 assert!(!item.auth_supported);
-                assert_eq!(item.public_link_import_supported, platform == "netease");
+                assert_eq!(
+                    item.public_link_import_supported,
+                    matches!(platform, "netease" | "qq_music" | "kugou")
+                );
                 assert!(item.file_import_supported);
             }
         }

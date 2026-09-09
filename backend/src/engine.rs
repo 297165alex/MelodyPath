@@ -514,14 +514,24 @@ pub fn compare_analyses(a: &PersonalDemo, b: &PersonalDemo) -> ComparisonReport 
             }
             let key = normalized_track_key(&recommendation.track);
             let affinity_a = if from_a {
-                recommendation.match_score
+                bridge_affinity(
+                    recommendation.match_score,
+                    &recommendation.track,
+                    &a.report,
+                    &a.playlist,
+                )
             } else {
                 profile_affinity(&recommendation.track, &a.report, &a.playlist)
             };
             let affinity_b = if from_a {
                 profile_affinity(&recommendation.track, &b.report, &b.playlist)
             } else {
-                recommendation.match_score
+                bridge_affinity(
+                    recommendation.match_score,
+                    &recommendation.track,
+                    &b.report,
+                    &b.playlist,
+                )
             };
             candidates
                 .entry(key)
@@ -543,11 +553,14 @@ pub fn compare_analyses(a: &PersonalDemo, b: &PersonalDemo) -> ComparisonReport 
     }
     let mut ranked: Vec<_> = candidates
         .into_values()
-        .filter_map(|candidate| mutual_bridge_track(candidate, &a.report, &b.report))
+        .filter_map(|candidate| {
+            mutual_bridge_track(candidate, &a.report, &b.report, &a.playlist, &b.playlist)
+        })
         .collect();
     ranked.sort_by(|left, right| right.bridge_score.total_cmp(&left.bridge_score));
     let mut zone_counts: HashMap<String, usize> = HashMap::new();
     let mut artist_counts: HashMap<(String, String), usize> = HashMap::new();
+    let mut language_counts: HashMap<(String, String), usize> = HashMap::new();
     report.bridge_playlist = ranked
         .into_iter()
         .filter(|item| {
@@ -561,11 +574,20 @@ pub fn compare_analyses(a: &PersonalDemo, b: &PersonalDemo) -> ComparisonReport 
             let artist_count = artist_counts
                 .entry((item.phase.clone(), artist))
                 .or_default();
-            if *zone_count >= 4 || *artist_count >= 2 {
+            let language = item
+                .track
+                .language
+                .clone()
+                .unwrap_or_else(|| "unknown".into());
+            let language_count = language_counts
+                .entry((item.phase.clone(), language))
+                .or_default();
+            if *zone_count >= 4 || *artist_count >= 2 || *language_count >= 2 {
                 return false;
             }
             *zone_count += 1;
             *artist_count += 1;
+            *language_count += 1;
             true
         })
         .collect();
@@ -639,6 +661,14 @@ fn comparison_metrics(a: &Playlist, b: &Playlist) -> ComparisonReport {
             .collect::<HashSet<_>>()
     };
     let tag_overlap = jaccard(&tag_set(a), &tag_set(b));
+    let language_set = |playlist: &Playlist| {
+        playlist
+            .tracks
+            .iter()
+            .filter_map(|track| track.language.clone())
+            .collect::<HashSet<_>>()
+    };
+    let language_compatibility = jaccard(&language_set(a), &language_set(b));
     let diversity_a = a_report
         .metrics
         .first()
@@ -650,11 +680,12 @@ fn comparison_metrics(a: &Playlist, b: &Playlist) -> ComparisonReport {
         .map(|metric| metric.value)
         .unwrap_or(0.0);
     let diversity_complementarity = (1.0 - (diversity_a - diversity_b).abs()).clamp(0.0, 1.0);
-    let similarity = (track_overlap * 0.28
-        + artist_overlap * 0.25
-        + genre_overlap * 0.27
+    let similarity = (track_overlap * 0.24
+        + artist_overlap * 0.22
+        + genre_overlap * 0.24
         + tag_overlap * 0.1
-        + diversity_complementarity * 0.1)
+        + language_compatibility * 0.12
+        + diversity_complementarity * 0.08)
         .clamp(0.0, 1.0);
     let signatures = |report: &TasteReport| {
         let mut values = report.core_preferences.clone();
@@ -703,6 +734,12 @@ fn comparison_metrics(a: &Playlist, b: &Playlist) -> ComparisonReport {
                 "真实元数据 Tag 集合的重合度",
             ),
             metric(
+                "Language Compatibility",
+                language_compatibility,
+                format!("{:.0}%", language_compatibility * 100.0),
+                "zh / en / ja / ko 语言偏好的确定性兼容度",
+            ),
+            metric(
                 "Diversity Complementarity",
                 diversity_complementarity,
                 format!("{:.0}%", diversity_complementarity * 100.0),
@@ -735,6 +772,8 @@ fn mutual_bridge_track(
     candidate: MutualCandidate,
     report_a: &TasteReport,
     report_b: &TasteReport,
+    playlist_a: &Playlist,
+    playlist_b: &Playlist,
 ) -> Option<BridgeTrack> {
     let minimum = candidate.score_a.min(candidate.score_b);
     let maximum = candidate.score_a.max(candidate.score_b);
@@ -763,15 +802,21 @@ fn mutual_bridge_track(
     shared_basis.sort();
     shared_basis.dedup();
     let score = ((candidate.score_a + candidate.score_b) / 2.0).clamp(0.0, 0.99);
+    let connection = format!(
+        "结合用户A的{}偏好和用户B的{}兴趣",
+        profile_label(playlist_a, report_a),
+        profile_label(playlist_b, report_b)
+    );
     Some(BridgeTrack {
         track: candidate.track,
         reason: format!(
-            "A 关联 {:.0}% · B 关联 {:.0}%",
+            "{}；A 关联 {:.0}% · B 关联 {:.0}%",
+            connection,
             candidate.score_a * 100.0,
             candidate.score_b * 100.0
         ),
-        reason_for_a: profile_reason(candidate.score_a, report_a),
-        reason_for_b: profile_reason(candidate.score_b, report_b),
+        reason_for_a: profile_reason(candidate.score_a, report_a, playlist_a),
+        reason_for_b: profile_reason(candidate.score_b, report_b, playlist_b),
         shared_basis,
         candidate_source: candidate.source,
         phase: phase.into(),
@@ -799,13 +844,81 @@ fn profile_affinity(track: &Track, report: &TasteReport, playlist: &Playlist) ->
     let artist_match = artist_identity_keys(track)
         .iter()
         .any(|artist| source_artists.contains(artist));
-    (if genre_match { 0.55 } else { 0.14 }) + if artist_match { 0.28 } else { 0.0 }
+    let source_moods: HashSet<_> = playlist
+        .tracks
+        .iter()
+        .flat_map(|item| item.mood_tags.iter())
+        .map(|mood| normalize_text(mood))
+        .collect();
+    let candidate_moods: HashSet<_> = track
+        .mood_tags
+        .iter()
+        .map(|mood| normalize_text(mood))
+        .collect();
+    let mood_similarity = if source_moods.is_empty() || candidate_moods.is_empty() {
+        0.35
+    } else {
+        jaccard(&source_moods, &candidate_moods)
+    };
+    let language_compatibility = language_affinity(track, playlist);
+    ((if genre_match { 1.0 } else { 0.2 }) * 0.35
+        + (if artist_match { 1.0 } else { 0.15 }) * 0.25
+        + mood_similarity * 0.18
+        + language_compatibility * 0.22)
+        .clamp(0.0, 1.0)
 }
 
-fn profile_reason(score: f32, report: &TasteReport) -> String {
+fn bridge_affinity(base: f32, track: &Track, report: &TasteReport, playlist: &Playlist) -> f32 {
+    (base * 0.55 + profile_affinity(track, report, playlist) * 0.45).clamp(0.0, 1.0)
+}
+
+fn language_affinity(track: &Track, playlist: &Playlist) -> f32 {
+    let Some(language) = track.language.as_deref() else {
+        return 0.4;
+    };
+    let known = playlist
+        .tracks
+        .iter()
+        .filter_map(|item| item.language.as_deref())
+        .collect::<Vec<_>>();
+    if known.is_empty() {
+        return 0.4;
+    }
+    known.iter().filter(|item| **item == language).count() as f32 / known.len() as f32
+}
+
+fn profile_label(playlist: &Playlist, report: &TasteReport) -> String {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for language in playlist
+        .tracks
+        .iter()
+        .filter_map(|track| track.language.as_deref())
+    {
+        *counts.entry(language).or_default() += 1;
+    }
+    let language = counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(language, _)| match language {
+            "zh" => "华语",
+            "en" => "英语",
+            "ja" => "日语",
+            "ko" => "韩语",
+            _ => "跨语言",
+        })
+        .unwrap_or("跨语言");
+    let genre = report
+        .core_preferences
+        .first()
+        .map(String::as_str)
+        .unwrap_or("音乐");
+    format!("{language}{genre}")
+}
+
+fn profile_reason(score: f32, report: &TasteReport, playlist: &Playlist) -> String {
     format!(
-        "与 {} 的核心偏好关联 {:.0}%",
-        report.core_preferences.join(" / "),
+        "与 {} 的 Genre、艺人、情绪和语言偏好关联 {:.0}%",
+        profile_label(playlist, report),
         score * 100.0
     )
 }
@@ -1018,5 +1131,67 @@ mod tests {
                 && !item.already_in_a
                 && !item.already_in_b
         }));
+    }
+
+    #[test]
+    fn friend_bridge_balances_chinese_and_english_language_candidates() {
+        let lists = demo_playlists();
+        let mut analysis_a = build_personal_demo(lists[0].clone());
+        let mut analysis_b = build_personal_demo(lists[1].clone());
+        analysis_a.playlist.is_demo = false;
+        analysis_b.playlist.is_demo = false;
+        analysis_a.playlist.name = "华语歌单".into();
+        analysis_b.playlist.name = "English playlist".into();
+        for track in &mut analysis_a.playlist.tracks {
+            track.language = Some("zh".into());
+        }
+        for track in &mut analysis_b.playlist.tracks {
+            track.language = Some("en".into());
+        }
+        let bridge_genres = analysis_a
+            .report
+            .core_preferences
+            .iter()
+            .chain(&analysis_b.report.core_preferences)
+            .cloned()
+            .collect::<Vec<_>>();
+        for (index, recommendation) in analysis_a.recommendations.iter_mut().enumerate() {
+            recommendation.track.language = Some("zh".into());
+            recommendation.track.title = format!("华语桥梁候选 {index}");
+            recommendation.track.normalized_title = normalize_text(&recommendation.track.title);
+            recommendation.track.artists = vec![format!("华语艺人 {index}")];
+            recommendation.track.genres = bridge_genres.clone();
+            recommendation.track.external_ids.clear();
+            recommendation.match_score = 0.82;
+        }
+        for (index, recommendation) in analysis_b.recommendations.iter_mut().enumerate() {
+            recommendation.track.language = Some("en".into());
+            recommendation.track.title = format!("English bridge candidate {index}");
+            recommendation.track.normalized_title = normalize_text(&recommendation.track.title);
+            recommendation.track.artists = vec![format!("English artist {index}")];
+            recommendation.track.genres = bridge_genres.clone();
+            recommendation.track.external_ids.clear();
+            recommendation.match_score = 0.82;
+        }
+
+        let report = compare_analyses(&analysis_a, &analysis_b);
+        let languages: HashSet<_> = report
+            .bridge_playlist
+            .iter()
+            .filter_map(|item| item.track.language.as_deref())
+            .collect();
+        assert!(languages.contains("zh") && languages.contains("en"));
+        assert!(
+            report
+                .bridge_playlist
+                .iter()
+                .all(|item| item.reason.contains("用户A") && item.reason.contains("用户B"))
+        );
+        assert!(
+            report
+                .metrics
+                .iter()
+                .any(|metric| metric.label == "Language Compatibility")
+        );
     }
 }

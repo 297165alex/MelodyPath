@@ -125,7 +125,7 @@ Windows 推荐在项目根目录一次启动前后端。首次运行会在缺少
 - **YouTube / YouTube Music**：连接 YouTube Music 或粘贴公开 Playlist URL；通过 Google 官方 OAuth 授权后读取真实歌单并预览。
 - **Apple Music**：官方公开目录 API 代码已实现，需部署者配置，尚未真人验收；可使用文件/文本导入。
 - **网易云**：按公开页面可验证的歌曲范围尝试导入，最多 20 首 / 20 秒，显示实际导入数 / 页面声明总数；确认预览后进入既有分析。没有可用公开歌曲时保留可访问性检查。
-- **QQ / 酷狗 / 汽水**：保留现有链接检测与文件/文本导入。
+- **QQ / 酷狗**：在官方公开页面提供可核验 `MusicPlaylist` JSON-LD 时条件导入，否则仅返回能力检测；**汽水**保持能力检测与文件/文本导入。
 - **本地文件**：所有平台均可使用用户提供的文件或批量文本导入。
 
 普通用户无需提供账号密码或 Cookie，也无需申请部署者的开发者凭据。
@@ -142,7 +142,7 @@ Windows 推荐在项目根目录一次启动前后端。首次运行会在缺少
 - 粘贴每行一首的批量文本，例如 `歌手 - 歌名`；
 - 明确点击 Demo，只体验与真实数据分离的演示流程。
 
-文件或文本会先进入导入预览。页面展示总行数、成功解析数、警告、无法解析行、检测字段和前 20 首歌曲；用户确认后才开始分析。无法匹配元数据的歌曲仍保留原始歌名和歌手，并继续参与不依赖 Genre 的基础统计。
+文件或文本会先进入导入预览。页面展示总行数、成功解析数、警告、无法解析行、检测字段和前 20 首歌曲；用户确认后才开始分析。文件、文本、账号歌单、中国平台公开链接和 Friend Bridge 共用 `Uploading → Parsing → Resolving metadata → Analyzing taste → Generating recommendation → Completed/Failed` 状态，不再静默等待。无法匹配元数据的歌曲仍保留原始歌名和歌手，并继续参与不依赖 Genre 的基础统计。
 
 ### 各平台推荐入口与文件备用方式
 
@@ -183,7 +183,7 @@ Spotify / YouTube 优先使用官方连接或公开 URL；文件和文本是备�
 
 1. 上传 CSV / TXT / JSON / M3U 等支持的文件，或复制歌曲列表，按每行 `歌手 - 歌名` 粘贴；
 2. Rust 实际解析到歌曲后显示 Import Preview，核对后确认分析；
-3. 网易云公开 URL 对页面明确列出且可验证的歌曲尝试有限读取，成功曲目进入既有预览；没有可用公开歌曲或全部详情失败时保留 `ACCESSIBILITY_CHECK_ONLY`。QQ、酷狗和汽水维持原有能力。
+3. 网易云公开 URL 对页面明确列出且可验证的歌曲尝试有限读取；QQ 与酷狗只解析官方公开页面内可核验的 `MusicPlaylist` JSON-LD。成功曲目进入既有预览；没有可用公开歌曲时明确返回 `Playlist recognized but tracks unavailable.` 与 `ACCESSIBILITY_CHECK_ONLY`。汽水维持能力检测。
 
 网易云支持识别 `https://y.music.163.com/m/playlist?id=...`、`https://music.163.com/playlist?id=...` 及 `playlist?id=...` 路由。公开页面可访问不等于完整曲目可导入；解析器只导入公开页面明确列出且身份可验证的歌曲，不推断未公开成员，也不会生成虚假歌曲。
 
@@ -350,11 +350,11 @@ Friend Bridge 接收两份分别预览并确认的歌单，使用确定性指标
 
 - common songs；
 - common artists；
-- Track、Artist、Genre 与 Tag similarity；
+- Track、Artist、Genre、Tag 与 `zh/en/ja/ko` Language compatibility；
 - diversity complementarity；
 - bridge recommendation。
 
-桥梁候选分为 `Safe for Both`、`Bridge` 与 `Adventure Together`，同时排除两份源歌单，并分别保留对 Friend A、Friend B 的关联依据。比较默认是临时流程，不创建公开社交账号，也不默认保存好友歌单。真实候选不足时保持为空，不用 Demo 补齐。
+桥梁候选分为 `Safe for Both`、`Bridge` 与 `Adventure Together`，按 Genre、Artist、Mood 与 Language 评分并限制单一语言垄断，同时排除两份源歌单，并分别保留对 Friend A、Friend B 的连接理由。两侧默认输入保持 Local file；比较是临时流程，不创建公开社交账号，也不默认保存好友歌单。真实候选不足时保持为空，不用 Demo 补齐。
 
 ## 5. Version Radar
 
@@ -368,6 +368,8 @@ Friend Bridge 接收两份分别预览并确认的歌单，使用确定性指标
 - Remaster
 
 Version Radar 用于发现同一首歌在不同平台或不同录音版本中的可用形式。Rust 会比较基础标题、艺人身份、版本语义、官方艺人/Topic/VEVO 信号，以及双方都有真实时长时的时长差。扫描按每批 4 首、最多 40 首执行，页面提供进度和取消。
+
+页面同时通过 MusicBrainz 公开发行组查询展示 `New releases`、`Upcoming albums` 和 `Artist updates`。没有符合条件的真实数据时显示 `No update available`，请求失败时显示错误，不使用固定数据补齐。
 
 当前页面、批处理、版本分类、确定性匹配以及 `Add to playlist → preview → confirm` 安全流程均已实现。真实平台搜索依赖 Google OAuth 与 YouTube Data API 配置；未配置或未授权时显示 `BLOCKED_EXTERNAL_AUTH`。显式 Mock 只验证流程，不能视为真实平台搜索成功。
 
@@ -408,8 +410,8 @@ Create a new private YouTube Playlist
 | YouTube / YouTube Music | 官方 OAuth、账号歌单读取、公开歌单 URL 导入、文件/文本导入 | 代码已实现，最终真实写入未验收 | **Official API · REAL VERIFIED**（读取） |
 | Apple Music | 公开目录歌单读取代码已实现；文件/文本导入可用；私人资料库未支持 | UNSUPPORTED | **Official API implemented · CONFIG REQUIRED · NOT REAL VERIFIED · Private library unsupported** |
 | NetEase / 网易云音乐 | 公开 HTML 条件导入、文件/文本；详情请求有上限、明确显示部分结果 | UNSUPPORTED | **PUBLIC HTML conditional import · 非官方 API** |
-| QQ Music / QQ音乐 | 文件/文本导入、URL 识别、公开可访问性检查；不能读取完整歌单 API 曲目 | UNSUPPORTED | **FILE/TEXT IMPORT · URL recognition · accessibility check** |
-| Kugou / 酷狗音乐 | 文件/文本导入、URL 识别 | UNSUPPORTED | **FILE/TEXT IMPORT · URL recognition** |
+| QQ Music / QQ音乐 | 文件/文本导入、URL 识别；公开页面存在可核验 MusicPlaylist JSON-LD 时条件导入 | UNSUPPORTED | **PUBLIC JSON-LD conditional import · 未真人验收** |
+| Kugou / 酷狗音乐 | 文件/文本导入、URL 识别；公开页面存在可核验 MusicPlaylist JSON-LD 时条件导入 | UNSUPPORTED | **PUBLIC JSON-LD conditional import · 未真人验收** |
 | Qishui / 汽水音乐 | 文件/文本导入、URL 识别 | UNSUPPORTED | **FILE/TEXT IMPORT · URL recognition** |
 
 课程最终接受 Apple 上述状态，不购买 Apple Developer Program，不将凭据或真人验收作为本分支收尾条件。UI 显示“官方 API · 需部署者配置”，说明公开目录代码已实现、尚未真人验收、私人资料库未支持；没有配置时仍可导入文件或文本。平台卡片使用统一中文状态，不将内部枚举作为主要用户文案。
@@ -417,7 +419,7 @@ Create a new private YouTube Playlist
 MelodyPath 不要求用户提供账号密码或 Cookie。公网 Demo 的普通用户无需 Developer Credentials；自行部署时，若需 Spotify / YouTube / Apple Music / Last.fm 的真实平台能力，由部署者在后端配置对应凭据。文件/文本导入无需开发者凭据，也不代表各平台都有统一官方导出格式。
 Last.fm 推荐 Provider 已使用五份真实歌单完成串行浏览器验收，状态为 **REAL VERIFIED**；Developer Key 由 MelodyPath 部署者配置，普通用户无需 Key，也无需登录 Last.fm。Spotify 与 YouTube / YouTube Music 的官方 OAuth、真实身份、用户歌单读取和 Playlist URL 导入均已由账号持有人完成真人验收，状态为 **REAL VERIFIED**。普通用户无需自己的 Developer credentials，只需在官方 OAuth 页面授权。
 
-完成对应平台官方 OAuth 后，Spotify 与 YouTube Playlist URL 可通过官方 API 读取真实曲目并生成 Import Preview。Apple Music 的公开目录 URL 读取代码已实现，但课程环境需配置且尚未真人验收；网易云按公开页面可验证范围尝试有限导入；QQ、酷狗和汽水保留 URL 识别、相应可访问性检查与文件/文本导入；“可识别”或“页面可访问”不等于能够读取完整曲目。
+完成对应平台官方 OAuth 后，Spotify 与 YouTube Playlist URL 可通过官方 API 读取真实曲目并生成 Import Preview。Apple Music 的公开目录 URL 读取代码已实现，但课程环境需配置且尚未真人验收；网易云按公开页面可验证范围尝试有限导入；QQ、酷狗仅在公开 JSON-LD 完整给出歌曲及艺人时条件导入，汽水保留能力检测与文件/文本导入；“可识别”或“页面可访问”不等于能够读取完整曲目。
 
 # Architecture
 
@@ -526,7 +528,7 @@ Windows 用户 clone 仓库后，在项目根目录运行：
 
 ### 链接显示“页面可访问”，为什么没有 Import Preview？
 
-链接识别、可访问性检查、歌曲读取是三个独立状态。网易云还会检查成员列表完整性并有限补全详情；列表不完整或无有效曲目时没有预览。QQ 只做前两项，酷狗 / 汽水只识别链接。
+链接识别、可访问性检查、歌曲读取是三个独立状态。网易云还会检查成员列表完整性并有限补全详情；QQ/酷狗只在公开 JSON-LD 含可核验歌曲和艺人时生成预览；无有效曲目时返回 `ACCESSIBILITY_CHECK_ONLY`。汽水只做能力检测。
 
 ### 页面无法连接后端、官方导入失败或旧预览失效怎么办？
 

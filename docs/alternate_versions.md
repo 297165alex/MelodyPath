@@ -1,6 +1,6 @@
 # Alternate Versions Explorer
 
-更新时间：2026-09-05
+更新时间：2026-09-09
 
 ## 目标与边界
 
@@ -26,6 +26,10 @@
 - 缺少配置或授权时返回 `BLOCKED_EXTERNAL_AUTH`，不自动切换 Mock。
 - Mock 只有用户明确点击后才运行，并显示 `Mock alternate-version connector · MOCK_VERIFIED` 与 `mock://` 来源。
 - 选择候选加入歌单时复用 Playlist Writer 的匹配预览与明确确认；不会一键写入真实账号。
+
+## Release Radar
+
+同一 `/versions` 页面还按已导入曲目的艺人查询 MusicBrainz 公开发行组，分别展示 `New releases`、`Upcoming albums` 与 `Artist updates`。查询失败显示错误，无符合条件的数据统一显示 `No update available`，不会用固定发行记录填充。该数据源不等于流媒体平台发行预告，日期缺失的记录会被忽略。
 
 ## 验证结果
 

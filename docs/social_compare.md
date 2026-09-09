@@ -1,10 +1,10 @@
 # 两份歌单临时比较（`/compare`）
 
-更新时间：2026-09-05
+更新时间：2026-09-09
 
 ## 用户流程
 
-`/compare` 允许用户分别上传两份 CSV/TSV/JSON/TXT/M3U8 文件，或粘贴两份批量文本。两侧输入都必须先经过统一 Rust 导入预览；只有两侧都确认后才执行比较。默认 `saved_locally=false`，不会建立公开好友账号，也不会默认把另一人的歌单写入历史。
+`/compare` 默认让 Friend A 与 Friend B 分别选择 Local file，也允许两侧粘贴 CSV/TSV/JSON/TXT/M3U/M3U8 批量文本。两侧输入都必须先经过统一 Rust 导入预览；只有两侧都确认后才执行比较。默认 `saved_locally=false`，不会建立公开好友账号，也不会默认把另一人的歌单写入历史。
 
 ## 确定性指标
 
@@ -14,10 +14,11 @@
 - Artist overlap：集中艺人身份/别名后的重合度。
 - Genre overlap：统一 Genre 后的重合度。
 - Tag overlap：真实元数据标签重合度。
+- Language compatibility：依据 `zh/en/ja/ko` 比较两侧语言结构，避免桥梁候选被单一语言占满。
 - Diversity complementarity：两份歌单多样性结构的互补度。
 - Overall compatibility：上述指标的确定性加权结果。
 
-共同探索候选分成 `Safe for Both / Bridge / Adventure Together`。任何候选都必须同时排除 A 和 B 两份源歌单，并保留对 A、对 B、共同依据、Provider 与分数。真实候选不足时列表保持为空，不使用固定桥梁曲目或 Demo 补齐。
+共同探索候选分成 `Safe for Both / Bridge / Adventure Together`。评分同时考虑 Genre、Artist、Mood 与 Language，并对单阶段同语言候选设上限。任何候选都必须同时排除 A 和 B 两份源歌单，并保留对 A、对 B、共同依据、Provider 与分数；理由明确说明它如何连接 A 与 B 的偏好。真实候选不足时列表保持为空，不使用固定桥梁曲目或 Demo 补齐。
 
 ## 隐私与平台边界
 
