@@ -40,8 +40,9 @@ export interface ImportPreview {
   detected_fields: string[]
   preview_tracks: ImportedTrack[]
   requires_column_confirmation: boolean
-  text_order: 'artist_title' | 'title_artist'
+  text_order: 'artist_title' | 'title_artist' | 'structured' | 'unknown'
   questions: string[]
+  parser_status?: 'rule' | 'llm_fallback' | 'need_confirmation'
 }
 
 export interface ImportAnalysisSummary {
@@ -88,6 +89,8 @@ export interface Track {
 }
 
 export interface TasteMetric { label: string; value: number; display: string; explanation: string }
+export interface RankingItem { name: string; count: number; rank: number; tied: boolean }
+export interface TasteProfile { resolved_track_count: number; top_artists: RankingItem[]; top_albums: RankingItem[]; language_distribution: RankingItem[]; genres: RankingItem[] }
 export interface TasteReport {
   playlist_name: string
   source_label: string
@@ -163,7 +166,7 @@ export interface TransferTrackResult { source_track: TransferTrack; target_id?: 
 export interface TransferResult { run_id: string; preview_id: string; status: string; source_count: number; matched_count: number; written_count: number; failed_count: number; skipped_count: number; unmatched_count: number; progress: number; playlist_id?: string; playlist_url?: string; report_csv_url?: string; report_json_url?: string; results: TransferTrackResult[]; source_was_modified: boolean; is_mock: boolean }
 export interface TransferRun { id: string; preview_id: string; destination_platform: 'spotify' | 'youtube'; status: 'QUEUED' | 'RUNNING' | 'CANCELLING' | 'CANCELLED' | 'FAILED' | 'COMPLETED'; processed_count: number; source_count: number; progress: number; result?: TransferResult; error?: string; is_mock: boolean; revision: number; created_at: number; updated_at: number }
 export interface RouteStep { genre: string; explanation: string; tracks: Track[] }
-export interface BridgeTrack { track: Track; reason: string; reason_for_a: string; reason_for_b: string; shared_basis: string[]; candidate_source: string; phase: string; bridge_score: number; already_in_a: boolean; already_in_b: boolean }
+export interface BridgeTrack { track: Track; reason: string; reason_for_a: string; reason_for_b: string; shared_basis: string[]; candidate_source: string; phase: string; bridge_score: number; score?: number; already_in_a: boolean; already_in_b: boolean }
 export interface ComparisonReport {
   user_a: string
   user_b: string
@@ -181,7 +184,7 @@ export interface ComparisonReport {
   data_source: string
   saved_locally: boolean
 }
-export interface PersonalAnalysis { analysis_id: string; playlist: Playlist; report: TasteReport; recommendations: Recommendation[]; route: RouteStep[]; recommendation_summary: RecommendationSummary; import_summary?: ImportAnalysisSummary; unmatched_tracks: ImportedTrack[]; metadata_resolutions: MetadataResolutionSummary[] }
+export interface PersonalAnalysis { analysis_id: string; playlist: Playlist; report: TasteReport; recommendations: Recommendation[]; route: RouteStep[]; recommendation_summary: RecommendationSummary; import_summary?: ImportAnalysisSummary; unmatched_tracks: ImportedTrack[]; metadata_resolutions: MetadataResolutionSummary[]; taste_profile?: TasteProfile }
 export interface DemoPayload {
   generated_at: string
   disclosure: string

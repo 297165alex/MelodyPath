@@ -6,6 +6,7 @@ mod export;
 mod genre;
 mod identity;
 mod import;
+mod intelligent_text;
 mod metadata;
 mod models;
 mod normalize;
@@ -288,7 +289,45 @@ async fn preview_import(
     State(state): State<AppState>,
     Json(request): Json<ImportPreviewRequest>,
 ) -> Result<Json<models::ImportPreview>, ApiError> {
-    let stored = import::parse_import(request).map_err(ApiError::bad_request)?;
+    let allow_llm_fallback = request.data_state == models::DataState::RealText
+        && matches!(
+            request
+                .format
+                .trim_start_matches('.')
+                .to_ascii_lowercase()
+                .as_str(),
+            "txt" | "text"
+        )
+        && request.text_order.is_none();
+    let rule_result = import::parse_import(request.clone());
+    let needs_llm_fallback = match &rule_result {
+        Ok(stored) => stored.needs_intelligent_fallback(),
+        Err(_) => true,
+    };
+    let stored = if allow_llm_fallback && needs_llm_fallback {
+        let settings = state.agent.settings().await;
+        match intelligent_text::parse_low_confidence_text(&request.content, &settings).await {
+            Ok(rows) => {
+                import::from_structured_text(request.clone(), rows).unwrap_or_else(|reason| {
+                    import::need_confirmation_preview(request.clone(), reason)
+                })
+            }
+            Err(reason) => match rule_result {
+                Ok(mut rule) => {
+                    rule.requires_column_confirmation = true;
+                    rule.parser_status = "need_confirmation".into();
+                    rule.questions.push(format!("Need confirmation：{reason}"));
+                    rule
+                }
+                Err(rule_reason) => import::need_confirmation_preview(
+                    request.clone(),
+                    format!("{rule_reason}；{reason}"),
+                ),
+            },
+        }
+    } else {
+        rule_result.map_err(ApiError::bad_request)?
+    };
     let preview = stored.preview();
     state
         .imports

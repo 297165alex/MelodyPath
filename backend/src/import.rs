@@ -1,6 +1,9 @@
 use crate::{
     genre::normalize_genres,
-    models::{DataState, ImportPreview, ImportPreviewRequest, ImportedTrack, MetadataStatus},
+    models::{
+        DataState, ImportPreview, ImportPreviewRequest, ImportedTrack, MetadataStatus,
+        StructuredTextTrack,
+    },
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -56,6 +59,7 @@ pub struct StoredImport {
     pub requires_column_confirmation: bool,
     pub text_order: String,
     pub questions: Vec<String>,
+    pub parser_status: String,
     pub tracks: Vec<ImportedTrack>,
 }
 
@@ -87,6 +91,7 @@ impl StoredImport {
             requires_column_confirmation: false,
             text_order: "artist_title".into(),
             questions: vec![],
+            parser_status: "rule".into(),
             tracks: result
                 .tracks
                 .iter()
@@ -164,6 +169,7 @@ impl StoredImport {
             requires_column_confirmation: false,
             text_order: "artist_title".into(),
             questions: vec![result.message.clone()],
+            parser_status: "rule".into(),
             tracks,
         })
     }
@@ -222,6 +228,7 @@ impl StoredImport {
             requires_column_confirmation: false,
             text_order: "artist_title".into(),
             questions: vec![result.message.clone()],
+            parser_status: "rule".into(),
             tracks,
         })
     }
@@ -241,7 +248,13 @@ impl StoredImport {
             requires_column_confirmation: self.requires_column_confirmation,
             text_order: self.text_order.clone(),
             questions: self.questions.clone(),
+            parser_status: self.parser_status.clone(),
         }
+    }
+
+    pub fn needs_intelligent_fallback(&self) -> bool {
+        self.data_state == DataState::RealText
+            && (self.requires_column_confirmation || self.invalid_count > 0)
     }
 }
 
@@ -331,8 +344,116 @@ pub fn parse_import(mut request: ImportPreviewRequest) -> Result<StoredImport, S
             }
         }),
         questions,
+        parser_status: "rule".into(),
         tracks: parsed.tracks,
     })
+}
+
+pub fn from_structured_text(
+    mut request: ImportPreviewRequest,
+    rows: Vec<StructuredTextTrack>,
+) -> Result<StoredImport, String> {
+    let format = request.format.trim_start_matches('.').to_ascii_lowercase();
+    if request.data_state != DataState::RealText || !matches!(format.as_str(), "txt" | "text") {
+        return Err("LLM parser fallback 只允许处理用户主动粘贴的真实文本".into());
+    }
+    request.content = request.content.nfkc().collect();
+    let lines = request
+        .content
+        .lines()
+        .map(clean_numbering)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if lines.is_empty() || rows.len() != lines.len() {
+        return Err("Need confirmation：结构化结果与输入行数不一致".into());
+    }
+    let mut tracks = Vec::with_capacity(rows.len());
+    for (line, row) in lines.iter().zip(rows) {
+        let title = clean_component(&row.title);
+        let artist = clean_component(&row.artist);
+        if !(0.0..=1.0).contains(&row.confidence)
+            || row.confidence < 0.80
+            || title.is_empty()
+            || artist.is_empty()
+            || !grounded_in_line(line, &title)
+            || !grounded_in_line(line, &artist)
+        {
+            return Err("Need confirmation：模型结果置信度不足或无法在原文中核验".into());
+        }
+        tracks.push(imported_track(
+            title,
+            split_artists(&artist),
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            "批量文本",
+            (*line).to_string(),
+            vec![format!(
+                "LLM 仅完成结构化理解（confidence={:.0}%）；真实性仍由 MetadataResolver 验证",
+                row.confidence * 100.0
+            )],
+        ));
+    }
+    Ok(StoredImport {
+        id: Uuid::new_v4().to_string(),
+        name: request.name.unwrap_or_else(|| "真实文本导入".into()),
+        file_name: None,
+        data_state: DataState::RealText,
+        source_label: "真实批量文本 · Intelligent parser fallback".into(),
+        total_rows: tracks.len(),
+        invalid_count: 0,
+        detected_fields: vec!["title".into(), "artist".into(), "confidence".into()],
+        requires_column_confirmation: false,
+        text_order: "structured".into(),
+        questions: vec![
+            "LLM 只拆分原文中的歌名和歌手，不生成歌曲；确认后仍进入 MetadataResolver。".into(),
+        ],
+        parser_status: "llm_fallback".into(),
+        tracks,
+    })
+}
+
+pub fn need_confirmation_preview(
+    request: ImportPreviewRequest,
+    reason: impl Into<String>,
+) -> StoredImport {
+    let total_rows = request
+        .content
+        .lines()
+        .map(clean_numbering)
+        .filter(|line| !line.is_empty())
+        .count();
+    StoredImport {
+        id: Uuid::new_v4().to_string(),
+        name: request.name.unwrap_or_else(|| "待确认文本".into()),
+        file_name: None,
+        data_state: DataState::RealText,
+        source_label: "真实批量文本 · Need confirmation".into(),
+        total_rows,
+        invalid_count: total_rows,
+        detected_fields: vec![],
+        requires_column_confirmation: true,
+        text_order: "unknown".into(),
+        questions: vec![format!("Need confirmation：{}", reason.into())],
+        parser_status: "need_confirmation".into(),
+        tracks: vec![],
+    }
+}
+
+fn grounded_in_line(line: &str, value: &str) -> bool {
+    let line = normalize_grounding(line);
+    let value = normalize_grounding(value);
+    !value.is_empty() && line.contains(&value)
+}
+
+fn normalize_grounding(value: &str) -> String {
+    value
+        .nfkc()
+        .flat_map(char::to_lowercase)
+        .filter(|character| character.is_alphanumeric())
+        .collect()
 }
 
 struct ParseResult {
@@ -732,6 +853,9 @@ fn artist_likelihood(value: &str, occurrences: usize) -> f32 {
     if crate::identity::canonical_artist_name(value) != normalized {
         score += 3.0;
     }
+    if crate::identity::is_known_artist_name(value) {
+        score += 2.5;
+    }
     let latin_letters: Vec<_> = value.chars().filter(|c| c.is_ascii_alphabetic()).collect();
     if latin_letters.len() >= 2 && latin_letters.iter().all(|c| c.is_ascii_uppercase()) {
         score += 2.0;
@@ -777,7 +901,9 @@ fn split_text_pair(line: &str) -> Option<(&str, &str, bool)> {
     if let Some((left, right)) = line.split_once('\t') {
         return non_empty_pair(left, right).map(|(left, right)| (left, right, true));
     }
-    for delimiter in [" — ", "—", " – ", "–", " - ", "-", " | ", "|"] {
+    for delimiter in [
+        " — ", "—", " – ", "–", " - ", "-", " | ", "|", " / ", "／", ": ", "：",
+    ] {
         if let Some((left, right)) = line.split_once(delimiter)
             && let Some((left, right)) = non_empty_pair(left, right)
         {
@@ -790,15 +916,74 @@ fn split_text_pair(line: &str) -> Option<(&str, &str, bool)> {
 fn parse_text_fields(line: &str, order: &str) -> Option<(String, Vec<String>, bool)> {
     if let Some((title, artist)) = line.split_once('\t') {
         return non_empty_pair(title, artist)
-            .map(|(title, artist)| (title.into(), split_artists(artist), false));
+            .map(|(title, artist)| (clean_component(title), split_artists(artist), false));
     }
-    let (left, right, _) = split_text_pair(line)?;
-    let (artist, title) = if order == "title_artist" {
-        (right, left)
-    } else {
-        (left, right)
-    };
-    Some((title.into(), split_artists(artist), true))
+    let ascii_lower = line.to_ascii_lowercase();
+    if let Some(index) = ascii_lower.find(" by ") {
+        let (title, suffix) = line.split_at(index);
+        let artist = &suffix[4..];
+        return non_empty_pair(title, artist).map(|(title, artist)| {
+            (
+                clean_component(title),
+                split_artists(&clean_component(artist)),
+                false,
+            )
+        });
+    }
+    if let Some((left, right, _)) = split_text_pair(line) {
+        let (artist, title) = if order == "title_artist" {
+            (right, left)
+        } else {
+            (left, right)
+        };
+        return Some((
+            clean_component(title),
+            split_artists(&clean_component(artist)),
+            true,
+        ));
+    }
+    for (open, close) in [
+        ('《', '》'),
+        ('「', '」'),
+        ('『', '』'),
+        ('(', ')'),
+        ('（', '）'),
+        ('"', '"'),
+        ('“', '”'),
+        ('‘', '’'),
+    ] {
+        if let (Some(start), Some(end)) = (line.find(open), line.rfind(close))
+            && start < end
+        {
+            let artist = line[..start].trim();
+            let title = line[start + open.len_utf8()..end].trim();
+            if let Some((artist, title)) = non_empty_pair(artist, title) {
+                return Some((clean_component(title), split_artists(artist), false));
+            }
+        }
+    }
+    if let Some(split) = line.find(char::is_whitespace) {
+        let (artist, title) = line.split_at(split);
+        let title_without_space = title.trim_start();
+        if artist_likelihood(artist, 1) >= 2.0
+            && !title_without_space.starts_with(['-', '—', '–', '|', '/', '／', ':', '：'])
+            && let Some((artist, title)) = non_empty_pair(artist, title)
+        {
+            return Some((clean_component(title), split_artists(artist), false));
+        }
+    }
+    None
+}
+
+fn clean_component(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches([
+            '"', '\'', '“', '”', '‘', '’', '《', '》', '「', '」', '『', '』', '(', ')', '（',
+            '）', '[', ']', '【', '】',
+        ])
+        .trim()
+        .to_string()
 }
 
 fn clean_numbering(raw: &str) -> &str {
@@ -1066,6 +1251,71 @@ mod tests {
         assert_eq!(parsed.text_order, "title_artist");
         assert_eq!(parsed.tracks[0].title, "晴天");
         assert_eq!(parsed.tracks[3].artists, ["BTS"]);
+    }
+
+    #[test]
+    fn rule_parser_handles_quotes_by_whitespace_colon_and_numbered_lists() {
+        let mut req = request(
+            "txt",
+            "Taylor Swift - Love Story\nLove Story by Taylor Swift\n周杰伦《晴天》\nYOASOBI「夜に駆ける」\nBTS 봄날\n1. Taylor Swift / Love Story\n2. Coldplay: Yellow\nTaylor Swift “Cardigan”\nColdplay (Fix You)",
+        );
+        req.data_state = DataState::RealText;
+        req.file_name = None;
+        req.text_order = None;
+        let parsed = parse_import(req).unwrap();
+        assert_eq!(parsed.tracks.len(), 9);
+        assert_eq!(parsed.invalid_count, 0);
+        assert!(!parsed.requires_column_confirmation);
+        assert_eq!(parsed.tracks[1].artists, ["Taylor Swift"]);
+        assert_eq!(parsed.tracks[2].title, "晴天");
+        assert_eq!(parsed.tracks[3].title, "夜に駆ける");
+        assert_eq!(parsed.tracks[4].artists, ["BTS"]);
+        assert_eq!(parsed.tracks[6].title, "Yellow");
+        assert_eq!(parsed.tracks[7].title, "Cardigan");
+        assert_eq!(parsed.tracks[8].title, "Fix You");
+    }
+
+    #[test]
+    fn llm_structured_rows_must_be_grounded_and_high_confidence() {
+        let mut req = request("txt", "Love Story Taylor Swift");
+        req.data_state = DataState::RealText;
+        req.file_name = None;
+        let valid = from_structured_text(
+            req.clone(),
+            vec![StructuredTextTrack {
+                title: "Love Story".into(),
+                artist: "Taylor Swift".into(),
+                confidence: 0.96,
+            }],
+        )
+        .unwrap();
+        assert_eq!(valid.parser_status, "llm_fallback");
+        assert_eq!(valid.tracks[0].title, "Love Story");
+
+        let invented = StructuredTextTrack {
+            title: "Blank Space".into(),
+            artist: "Taylor Swift".into(),
+            confidence: 0.99,
+        };
+        assert!(from_structured_text(req.clone(), vec![invented]).is_err());
+        let uncertain = StructuredTextTrack {
+            title: "Love Story".into(),
+            artist: "Taylor Swift".into(),
+            confidence: 0.60,
+        };
+        assert!(from_structured_text(req, vec![uncertain]).is_err());
+    }
+
+    #[test]
+    fn unresolved_text_returns_need_confirmation_without_tracks() {
+        let mut req = request("txt", "无法判断这一行");
+        req.data_state = DataState::RealText;
+        req.file_name = None;
+        let preview = need_confirmation_preview(req, "结构不足").preview();
+        assert_eq!(preview.parser_status, "need_confirmation");
+        assert!(preview.requires_column_confirmation);
+        assert!(preview.preview_tracks.is_empty());
+        assert!(preview.questions[0].contains("Need confirmation"));
     }
 
     #[test]

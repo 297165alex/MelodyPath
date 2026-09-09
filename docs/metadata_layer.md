@@ -20,6 +20,8 @@ Analysis / Recommendation / platform export adapters
 
 MusicBrainz 候选按标题、艺术家以及双方都有真实值时的时长进行确定性评分。达到阈值才替换标准 Track，并保存 recording MBID、专辑和时长等实际返回字段；没有候选、低置信候选、超时或 API 错误时返回 `UNMATCHED`，原始标题和艺术家继续进入分析，不生成补造字段。既有公开目录和本地画像仍是兼容降级，不改变 Apple connector。
 
+Taste Profile 在 Resolver 完成后单独从非 `UNMATCHED` 曲目生成；未匹配歌曲仍可参与原有基础统计，但不会进入 Top Artists、Top Albums、Language Distribution 或 Genres 排名。`REAL_ACCOUNT` 平台数据不生成新增画像结构，以保留既有数据用途限制。
+
 ## Spotify export
 
 `backend/src/export/spotify_playlist.rs` 在既有 `PlaylistWriter` 和 Spotify OAuth connector 之上编排标准 Track 匹配。它不保存凭据、不复制 OAuth 逻辑，也不参与 Spotify import。前端只在已连接状态下从 Analysis 或 Recommendation 显示 `Create Spotify Playlist`；随后仍经过候选预览、歧义处理和明确确认，默认创建新的私有歌单。

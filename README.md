@@ -51,7 +51,7 @@ npm run build
 
 - **基础功能无需 Key**：本地文件/文本解析与基础音乐画像可直接使用。
 - **真实推荐**：部署者配置 `LASTFM_API_KEY`，用于 Discover 及 Agent 的真实推荐候选；普通用户无需 Last.fm Key，也无需登录 Last.fm。
-- **LLM Agent**：在启动后端的进程环境中提供 `OPENAI_API_KEY`，并在应用 Settings 中配置 OpenAI-compatible Endpoint 和 Model，使其与 Key 所属服务一致。`.env.example` 没有定义 Endpoint / Model 环境变量，不要自行猜测变量名；启动脚本的 User scope 加载列表也不包含 `OPENAI_API_KEY`，需确保启动终端已继承该变量。未配置 Key 时明确使用 `DETERMINISTIC_FALLBACK`，当前真实 LLM 验收仍未完成。
+- **LLM Agent / 文本结构化 fallback**：在启动后端的进程环境中提供 `OPENAI_API_KEY`，并在应用 Settings 中配置 OpenAI-compatible Endpoint 和 Model，使其与 Key 所属服务一致。规则无法可靠解析的 `REAL_TEXT` 才会调用模型；模型只能复制原行中的 title/artist/confidence，不能生成歌曲。`.env.example` 没有定义 Endpoint / Model 环境变量，不要自行猜测变量名；启动脚本的 User scope 加载列表也不包含 `OPENAI_API_KEY`，需确保启动终端已继承该变量。未配置 Key 时返回 `Need confirmation`，当前真实 LLM 验收仍未完成。
 - **Spotify 真实账号连接**：部署者配置 `SPOTIFY_CLIENT_ID`、`SPOTIFY_CLIENT_SECRET`、`SPOTIFY_REDIRECT_URI`，可按需设置 `SPOTIFY_MARKET`，并在 Spotify Developer Dashboard 登记完全一致的回调地址；普通用户只在 Spotify 官方页面授权。
 - **YouTube / Google 真实账号连接**：部署者配置 `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`、`GOOGLE_REDIRECT_URI`，在 Google Cloud 启用 YouTube Data API v3、登记完全一致的回调地址并准备额度；普通用户只在 Google 官方页面授权。默认连接只申请 YouTube 只读权限；只有用户进入 Copy Playlist 写入流程时才单独申请写权限。模板另列的 `YOUTUBE_API_KEY` 不能替代账号 OAuth 授权。
 
@@ -141,6 +141,8 @@ Windows 推荐在项目根目录一次启动前后端。首次运行会在缺少
 - 上传 `.txt`、`.csv`、`.tsv`、`.json`、`.m3u` 或 `.m3u8`；
 - 粘贴每行一首的批量文本，例如 `歌手 - 歌名`；
 - 明确点击 Demo，只体验与真实数据分离的演示流程。
+
+文本规则层还支持 `Love Story by Taylor Swift`、`周杰伦《晴天》`、`YOASOBI「夜に駆ける」`、`BTS 봄날`、编号列表、斜杠和冒号。高置信度结果直接进入预览；低置信度时才使用可选 LLM parser fallback。fallback 输出必须逐行对应输入、title/artist 必须能在原文中核验且 confidence ≥ 0.8，否则页面显示 `Need confirmation`。
 
 文件或文本会先进入导入预览。页面展示总行数、成功解析数、警告、无法解析行、检测字段和前 20 首歌曲；用户确认后才开始分析。文件、文本、账号歌单、中国平台公开链接和 Friend Bridge 共用 `Uploading → Parsing → Resolving metadata → Analyzing taste → Generating recommendation → Completed/Failed` 状态，不再静默等待。无法匹配元数据的歌曲仍保留原始歌名和歌手，并继续参与不依赖 Genre 的基础统计。
 
@@ -299,6 +301,7 @@ CSV/TSV 使用 Rust `csv` 库解析，支持 UTF-8 BOM、引号和字段内逗�
 - **Music Profile**：核心偏好、相邻偏好、待探索方向、集中度、多样性与元数据置信度；
 - **Genre**：统一规范化后的分布、核心 Genre 与覆盖率；
 - **Artist**：艺人频次、合作歌曲与集中式跨语言艺人身份；
+- **Taste Profile**：仅统计 MetadataResolver 后状态不是 `UNMATCHED` 的歌曲，展示 Top Artists、Top Albums、Language Distribution 与 Genres；统一 `RankingItem { name, count, rank, tied }` 保留并列排名；
 - **Feature**：专辑和年代分布、重复曲目、合作曲目、真实 Energy 均值与覆盖率。
 
 Energy 缺失保持为 `None`，不会被当作 0，也不会生成虚构值。Genre 或外部元数据缺失不会删除用户原曲。

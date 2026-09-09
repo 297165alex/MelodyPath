@@ -67,6 +67,19 @@ pub struct ImportPreview {
     pub requires_column_confirmation: bool,
     pub text_order: String,
     pub questions: Vec<String>,
+    #[serde(default = "default_rule_parser_status")]
+    pub parser_status: String,
+}
+
+fn default_rule_parser_status() -> String {
+    "rule".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StructuredTextTrack {
+    pub title: String,
+    pub artist: String,
+    pub confidence: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -306,6 +319,23 @@ pub struct TasteReport {
     pub limitations: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RankingItem {
+    pub name: String,
+    pub count: usize,
+    pub rank: usize,
+    pub tied: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TasteProfile {
+    pub resolved_track_count: usize,
+    pub top_artists: Vec<RankingItem>,
+    pub top_albums: Vec<RankingItem>,
+    pub language_distribution: Vec<RankingItem>,
+    pub genres: Vec<RankingItem>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersonalDemo {
     #[serde(default)]
@@ -321,6 +351,8 @@ pub struct PersonalDemo {
     pub unmatched_tracks: Vec<ImportedTrack>,
     #[serde(default)]
     pub metadata_resolutions: Vec<MetadataResolutionSummary>,
+    #[serde(default)]
+    pub taste_profile: TasteProfile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -337,6 +369,8 @@ pub struct BridgeTrack {
     pub candidate_source: String,
     pub phase: String,
     pub bridge_score: f32,
+    #[serde(default)]
+    pub score: f32,
     #[serde(default)]
     pub already_in_a: bool,
     #[serde(default)]

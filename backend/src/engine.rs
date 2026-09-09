@@ -3,9 +3,9 @@ use crate::{
     genre::{canonicalize_genre, exploration_genres, genre_key, is_unknown_genre},
     identity::{artist_identity_keys, normalized_track_key, same_recording},
     models::{
-        BridgeTrack, ComparisonReport, PersonalDemo, Playlist, Recommendation,
-        RecommendationSummary, RecommendationZoneSummary, RouteStep, TasteMetric, TasteReport,
-        Track,
+        BridgeTrack, ComparisonReport, PersonalDemo, Playlist, RankingItem, Recommendation,
+        RecommendationSummary, RecommendationZoneSummary, RouteStep, TasteMetric, TasteProfile,
+        TasteReport, Track,
     },
     normalize::normalize_text,
 };
@@ -260,6 +260,69 @@ pub fn analyze_playlist(playlist: &Playlist) -> TasteReport {
     }
 }
 
+pub fn build_taste_profile<'a>(tracks: impl IntoIterator<Item = &'a Track>) -> TasteProfile {
+    let tracks = tracks.into_iter().collect::<Vec<_>>();
+    let mut artists = HashMap::new();
+    let mut albums = HashMap::new();
+    let mut languages = HashMap::new();
+    let mut genres = HashMap::new();
+    for track in &tracks {
+        for artist in &track.artists {
+            *artists.entry(artist.trim().to_string()).or_default() += 1;
+        }
+        if let Some(album) = track
+            .album
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            *albums.entry(album.to_string()).or_default() += 1;
+        }
+        if let Some(language) = track.language.as_deref() {
+            let label = match language {
+                "en" | "英语" | "英语/其他" => "English",
+                "zh" | "中文" | "中文/日语" => "Chinese",
+                "ja" | "日语" => "Japanese",
+                "ko" | "韩语" | "韩语/英语" => "Korean",
+                other => other,
+            };
+            *languages.entry(label.to_string()).or_default() += 1;
+        }
+        for genre in track.genres.iter().filter(|genre| !is_unknown_genre(genre)) {
+            *genres.entry(canonicalize_genre(genre)).or_default() += 1;
+        }
+    }
+    TasteProfile {
+        resolved_track_count: tracks.len(),
+        top_artists: ranking_items(artists, 10),
+        top_albums: ranking_items(albums, 10),
+        language_distribution: ranking_items(languages, usize::MAX),
+        genres: ranking_items(genres, 10),
+    }
+}
+
+fn ranking_items(counts: HashMap<String, usize>, limit_rank: usize) -> Vec<RankingItem> {
+    let mut values = counts.into_iter().collect::<Vec<_>>();
+    values.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    values
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (name, count))| {
+            let rank = values
+                .iter()
+                .position(|(_, candidate_count)| candidate_count == count)
+                .map(|position| position + 1)
+                .unwrap_or(index + 1);
+            (rank <= limit_rank).then(|| RankingItem {
+                name: name.clone(),
+                count: *count,
+                rank,
+                tied: values.iter().filter(|(_, value)| value == count).count() > 1,
+            })
+        })
+        .collect()
+}
+
 pub fn adjacent_genres(core: &[String]) -> Vec<String> {
     crate::genre::adjacent_genres(core)
 }
@@ -451,6 +514,7 @@ pub fn build_personal_demo(playlist: Playlist) -> PersonalDemo {
         .filter(|item| item.zone == "惊喜区")
         .cloned()
         .collect();
+    let taste_profile = build_taste_profile(playlist.tracks.iter());
     PersonalDemo {
         analysis_id: format!("demo:{}", playlist.id),
         playlist,
@@ -488,6 +552,7 @@ pub fn build_personal_demo(playlist: Playlist) -> PersonalDemo {
         import_summary: None,
         unmatched_tracks: Vec::new(),
         metadata_resolutions: Vec::new(),
+        taste_profile,
     }
 }
 
@@ -821,6 +886,7 @@ fn mutual_bridge_track(
         candidate_source: candidate.source,
         phase: phase.into(),
         bridge_score: score,
+        score,
         already_in_a: false,
         already_in_b: false,
     })
@@ -988,6 +1054,7 @@ fn demo_bridge_playlist() -> Vec<BridgeTrack> {
                     candidate_source: "DEMO 内置候选".into(),
                     phase: (*phase).into(),
                     bridge_score: *score,
+                    score: *score,
                     already_in_a: false,
                     already_in_b: false,
                 })
@@ -1016,6 +1083,63 @@ mod tests {
                 .metrics
                 .iter()
                 .all(|m| (0.0..=1.0).contains(&m.value))
+        );
+    }
+
+    #[test]
+    fn taste_profile_ranks_artist_album_and_ties_from_resolved_tracks_only() {
+        let mut tracks = demo_playlists()[0].tracks[..5].to_vec();
+        for (index, track) in tracks.iter_mut().enumerate() {
+            track.artists = vec![
+                if index < 2 {
+                    "Artist A"
+                } else if index < 4 {
+                    "Artist B"
+                } else {
+                    "Unresolved Artist"
+                }
+                .into(),
+            ];
+            track.album = Some(
+                if index < 2 {
+                    "Album A"
+                } else if index < 4 {
+                    "Album B"
+                } else {
+                    "Unresolved Album"
+                }
+                .into(),
+            );
+            track.language = Some(if index % 2 == 0 { "zh" } else { "en" }.into());
+        }
+        let profile = build_taste_profile(tracks[..4].iter());
+        assert_eq!(profile.resolved_track_count, 4);
+        assert_eq!(profile.top_artists.len(), 2);
+        assert!(
+            profile
+                .top_artists
+                .iter()
+                .all(|item| item.rank == 1 && item.tied && item.count == 2)
+        );
+        assert!(
+            profile
+                .top_albums
+                .iter()
+                .all(|item| item.rank == 1 && item.tied)
+        );
+        assert!(
+            !profile
+                .top_artists
+                .iter()
+                .any(|item| item.name == "Unresolved Artist")
+        );
+        assert_eq!(
+            profile
+                .language_distribution
+                .iter()
+                .map(|item| item.count)
+                .sum::<usize>(),
+            4
         );
     }
 
@@ -1185,7 +1309,9 @@ mod tests {
             report
                 .bridge_playlist
                 .iter()
-                .all(|item| item.reason.contains("用户A") && item.reason.contains("用户B"))
+                .all(|item| item.reason.contains("用户A")
+                    && item.reason.contains("用户B")
+                    && item.score == item.bridge_score)
         );
         assert!(
             report

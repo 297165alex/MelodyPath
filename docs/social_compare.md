@@ -20,6 +20,8 @@
 
 共同探索候选分成 `Safe for Both / Bridge / Adventure Together`。评分同时考虑 Genre、Artist、Mood 与 Language，并对单阶段同语言候选设上限。任何候选都必须同时排除 A 和 B 两份源歌单，并保留对 A、对 B、共同依据、Provider 与分数；理由明确说明它如何连接 A 与 B 的偏好。真实候选不足时列表保持为空，不使用固定桥梁曲目或 Demo 补齐。
 
+桥梁响应保留既有 `bridge_score`，并增加同值的兼容字段 `score`，核心输出可按 `{ track, score, reason }` 消费。`reason` 必须同时提到用户 A 与用户 B 的偏好连接，不能只复述候选标签。
+
 ## 隐私与平台边界
 
 - 文件和文本用于本次临时比较；保存好友数据需要独立、明确的产品实现和用户同意。

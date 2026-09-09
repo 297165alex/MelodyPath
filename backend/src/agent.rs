@@ -1736,6 +1736,7 @@ mod tests {
             }],
         };
         let report = engine::analyze_playlist(&playlist);
+        let taste_profile = engine::build_taste_profile(playlist.tracks.iter());
         PersonalDemo {
             analysis_id: id.into(),
             playlist,
@@ -1757,6 +1758,7 @@ mod tests {
             import_summary: None,
             unmatched_tracks: Vec::new(),
             metadata_resolutions: Vec::new(),
+            taste_profile,
         }
     }
 

@@ -16,6 +16,16 @@ const ARTIST_ALIAS_GROUPS: &[(&str, &[&str])] = &[
         &["jj lin", "林俊傑", "林俊杰", "lin jun jie", "林俊傑 jj"],
     ),
 ];
+const REVIEWED_ARTIST_NAMES: &[&str] = &[
+    "taylor swift",
+    "coldplay",
+    "yoasobi",
+    "bts",
+    "newjeans",
+    "iu",
+    "jay chou",
+    "周杰伦",
+];
 
 const TRACK_ID_KEYS: &[&str] = &["mbid", "isrc", "spotify", "youtube", "itunes"];
 const ARTIST_ID_KEYS: &[&str] = &[
@@ -112,6 +122,17 @@ pub fn canonical_artist_name(name: &str) -> String {
         }
     }
     normalized
+}
+
+pub fn is_known_artist_name(name: &str) -> bool {
+    let normalized = normalize_text(name);
+    REVIEWED_ARTIST_NAMES.contains(&normalized.as_str())
+        || ARTIST_ALIAS_GROUPS.iter().any(|(canonical, aliases)| {
+            normalize_text(canonical) == normalized
+                || aliases
+                    .iter()
+                    .any(|alias| normalize_text(alias) == normalized)
+        })
 }
 
 pub fn artist_identity_keys(track: &Track) -> BTreeSet<String> {

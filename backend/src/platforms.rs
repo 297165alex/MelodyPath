@@ -1329,6 +1329,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn qq_public_playlist_url_accepts_only_official_numeric_playlist_routes() {
+        for url in [
+            "https://y.qq.com/n/ryqq/playlist/7520364922",
+            "https://y.qq.com/n/ryqq_v2/playlist/7520364922",
+            "https://y.qq.com/n/m/detail/taoge/index.html?id=7520364922",
+        ] {
+            let link = recognize_link(url).unwrap().unwrap();
+            assert_eq!(link.platform, "qq_music");
+            assert_eq!(link.playlist_id.as_deref(), Some("7520364922"));
+            assert_eq!(
+                link.normalized_url.as_deref(),
+                Some("https://y.qq.com/n/ryqq/playlist/7520364922")
+            );
+        }
+        for url in [
+            "https://y.qq.com/n/ryqq/playlist/not-a-number",
+            "https://y.qq.com/n/ryqq/songDetail/7520364922",
+            "https://y.qq.com.evil.example/n/ryqq/playlist/7520364922",
+        ] {
+            let result = recognize_link(url).unwrap();
+            assert!(result.is_none() || result.is_some_and(|link| link.playlist_id.is_none()));
+        }
+    }
+
     #[tokio::test]
     async fn supported_domains_with_invalid_ids_do_not_trigger_network_or_import() {
         for url in [

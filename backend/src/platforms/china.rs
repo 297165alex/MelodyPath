@@ -3,6 +3,7 @@ use crate::{
     models::{PlaylistImportRow, Track},
     normalize::{detect_version, normalize_text},
 };
+use reqwest::Url;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -190,8 +191,8 @@ fn parse_playlist(
         let track_url = item
             .get("url")
             .and_then(Value::as_str)
-            .filter(|url| url.starts_with("https://"))
-            .unwrap_or(source_url);
+            .and_then(|url| safe_public_url(platform, url))
+            .unwrap_or_else(|| source_url.to_string());
         let duration_ms = item
             .get("duration")
             .and_then(Value::as_str)
@@ -212,7 +213,7 @@ fn parse_playlist(
                 album: album.clone(),
                 duration_ms,
                 source_platform: platform.into(),
-                source_url: track_url.into(),
+                source_url: track_url.clone(),
             });
         rows.push(PlaylistImportRow {
             source_platform: platform.into(),
@@ -221,7 +222,7 @@ fn parse_playlist(
             track_title: title.map(str::to_string),
             artist: artist.as_deref().map(|value| vec![value.to_string()]),
             duration_ms,
-            source_url: Some(track_url.into()),
+            source_url: Some(track_url),
             availability: "PUBLIC_METADATA".into(),
             import_status: if imported.is_some() {
                 "IMPORTED"
@@ -247,6 +248,24 @@ fn parse_playlist(
         rows,
         status,
     }
+}
+
+fn safe_public_url(platform: &str, candidate: &str) -> Option<String> {
+    let parsed = Url::parse(candidate).ok()?;
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port().is_some()
+    {
+        return None;
+    }
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    let allowed = match platform {
+        "qq_music" => host == "y.qq.com" || host.ends_with(".y.qq.com"),
+        "kugou" => host == "kugou.com" || host.ends_with(".kugou.com"),
+        _ => false,
+    };
+    allowed.then(|| parsed.to_string())
 }
 
 fn artist_name(value: Option<&Value>) -> Option<String> {
@@ -329,5 +348,26 @@ mod tests {
             );
         assert!(parsed.raw_tracks.is_empty());
         assert_eq!(parsed.status, "ACCESSIBILITY_CHECK_ONLY");
+    }
+
+    #[test]
+    fn qq_public_metadata_rejects_unavailable_or_unrelated_track_urls() {
+        let html = br#"<script type="application/ld+json">{"@type":"MusicPlaylist","name":"QQ public","track":[{"name":"Yellow","byArtist":{"name":"Coldplay"},"url":"https://evil.example/song"}]}</script>"#;
+        let source = "https://y.qq.com/n/ryqq/playlist/7520364922";
+        let parsed = PublicJsonLdAdapter::for_platform("qq_music")
+            .unwrap()
+            .parse_public_metadata(html, "7520364922", source);
+        assert_eq!(parsed.raw_tracks.len(), 1);
+        assert_eq!(parsed.raw_tracks[0].source_url, source);
+
+        let unavailable = PublicJsonLdAdapter::for_platform("qq_music")
+            .unwrap()
+            .parse_public_metadata(
+                br#"<script type="application/ld+json">{"@type":"MusicPlaylist","track":[{"name":"No artist"}]}</script>"#,
+                "7520364922",
+                source,
+            );
+        assert!(unavailable.raw_tracks.is_empty());
+        assert_eq!(unavailable.status, "ACCESSIBILITY_CHECK_ONLY");
     }
 }

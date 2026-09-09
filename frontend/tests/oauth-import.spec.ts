@@ -641,6 +641,46 @@ test('multilingual pasted text keeps Unicode and renders normalized Track previe
   await expect(page.locator('.import-preview')).toContainText('봄날')
 })
 
+test('intelligent text fallback is disclosed and cannot bypass MetadataResolver', async ({ page }) => {
+  await setup(page)
+  await page.route('**/api/imports/preview', route => route.fulfill({ json: {
+    ...importPreviewFixture('llm-structured'), file_name: undefined, data_state: 'REAL_TEXT', total_rows: 1, parsed_count: 1,
+    parser_status: 'llm_fallback', source_label: '真实批量文本 · Intelligent parser fallback', detected_fields: ['title', 'artist', 'confidence'],
+    questions: ['LLM 只拆分原文中的歌名和歌手，不生成歌曲；确认后仍进入 MetadataResolver。'],
+    preview_tracks: [{ title: 'Love Story', artists: ['Taylor Swift'], genres: [], source: 'text', original_row: 'Love Story Taylor Swift', metadata_status: 'missing', metadata_confidence: 0.25, warnings: ['LLM 仅完成结构化理解'] }],
+  } }))
+  await page.goto('/')
+  await page.locator('#more-import textarea').fill('Love Story Taylor Swift')
+  await page.getByRole('button', { name: '解析并预览文本' }).click()
+  const preview = page.locator('.import-preview')
+  await expect(preview).toContainText('LLM STRUCTURED · NOT VERIFIED')
+  await expect(preview).toContainText('真实性待 MetadataResolver 验证')
+  await expect(preview.getByRole('button', { name: '确认并分析真实数据' })).toBeEnabled()
+})
+
+test('Taste Profile groups tied ranks and excludes unresolved metadata', async ({ page }) => {
+  await setup(page)
+  await page.route('**/api/imports/preview', route => route.fulfill({ json: importPreviewFixture('taste-profile') }))
+  const analysis = { ...analysisWithoutLastFmFixture(), taste_profile: {
+    resolved_track_count: 4,
+    top_artists: [{ name: 'Taylor Swift', count: 2, rank: 1, tied: true }, { name: '周杰伦', count: 2, rank: 1, tied: true }],
+    top_albums: [{ name: 'Midnights', count: 2, rank: 1, tied: true }, { name: '叶惠美', count: 2, rank: 1, tied: true }],
+    language_distribution: [{ name: 'English', count: 2, rank: 1, tied: true }, { name: 'Chinese', count: 2, rank: 1, tied: true }],
+    genres: [{ name: 'Pop', count: 3, rank: 1, tied: false }],
+  } }
+  await page.route('**/api/imports/*/analyze', route => route.fulfill({ json: analysis }))
+  await page.goto('/')
+  await page.locator('#more-import input[type=file]').setInputFiles({ name: 'profile.csv', mimeType: 'text/csv', buffer: Buffer.from('artist,title\nTaylor Swift,Love Story') })
+  await page.getByRole('button', { name: '确认并分析真实数据' }).click()
+  const profile = page.locator('.taste-profile')
+  await expect(profile).toContainText('RESOLVED METADATA ONLY')
+  await expect(profile).toContainText('Rank 1 · Tie')
+  await expect(profile).toContainText('Taylor Swift')
+  await expect(profile).toContainText('周杰伦')
+  await expect(profile).toContainText('50% · 2 tracks')
+  await expect(profile).not.toContainText('Unresolved Artist')
+})
+
 test('Friend Bridge defaults both users to Local file', async ({ page }) => {
   await setup(page)
   await page.goto('/compare')

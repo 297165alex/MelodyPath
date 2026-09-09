@@ -13,7 +13,11 @@ use crate::{
 };
 use reqwest::Client;
 use serde::Deserialize;
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{
     sync::RwLock,
     time::{sleep, timeout},
@@ -115,6 +119,17 @@ impl MetadataService {
         }
 
         let report = engine::analyze_playlist(&playlist);
+        let resolved_ids = metadata_resolutions
+            .iter()
+            .filter(|resolution| resolution.status != "UNMATCHED")
+            .map(|resolution| resolution.track_id.as_str())
+            .collect::<HashSet<_>>();
+        let taste_profile = engine::build_taste_profile(
+            playlist
+                .tracks
+                .iter()
+                .filter(|track| resolved_ids.contains(track.id.as_str())),
+        );
         let (recommendations, recommendation_summary, route) =
             build_real_recommendations(self.recommendation_provider.as_ref(), &playlist, &report)
                 .await;
@@ -128,6 +143,7 @@ impl MetadataService {
             import_summary: None,
             unmatched_tracks: Vec::new(),
             metadata_resolutions,
+            taste_profile,
         }
     }
 
@@ -223,6 +239,13 @@ impl MetadataService {
             sleep(Duration::from_millis(40)).await;
         }
 
+        for track in &mut resolved_tracks {
+            if track.language.is_none() {
+                track.language =
+                    infer_language(&format!("{} {}", track.title, track.artists.join(" ")));
+            }
+        }
+
         let playlist = Playlist {
             id: Uuid::new_v4().to_string(),
             name,
@@ -233,6 +256,21 @@ impl MetadataService {
         };
         progress("analyzing_taste");
         let report = engine::analyze_playlist(&playlist);
+        let taste_profile = if data_state == DataState::RealAccount {
+            Default::default()
+        } else {
+            let resolved_ids = metadata_resolutions
+                .iter()
+                .filter(|resolution| resolution.status != "UNMATCHED")
+                .map(|resolution| resolution.track_id.as_str())
+                .collect::<HashSet<_>>();
+            engine::build_taste_profile(
+                playlist
+                    .tracks
+                    .iter()
+                    .filter(|track| resolved_ids.contains(track.id.as_str())),
+            )
+        };
         progress("generating_recommendation");
         let (recommendations, recommendation_summary, route) =
             build_real_recommendations(self.recommendation_provider.as_ref(), &playlist, &report)
@@ -274,6 +312,7 @@ impl MetadataService {
             }),
             unmatched_tracks,
             metadata_resolutions,
+            taste_profile,
         };
         progress("completed");
         result
@@ -795,6 +834,8 @@ mod tests {
         assert!(!result.report.is_demo);
         assert_eq!(result.playlist.tracks[0].title, "尚未发布到目录的新歌 XYZ");
         assert_eq!(result.unmatched_tracks.len(), 1);
+        assert_eq!(result.taste_profile.resolved_track_count, 0);
+        assert!(result.taste_profile.top_artists.is_empty());
         assert_eq!(result.import_summary.unwrap().analyzed_count, 1);
     }
 
@@ -898,6 +939,9 @@ mod tests {
         assert_eq!(result.recommendations.len(), 1);
         assert_eq!(result.recommendations[0].zone, "舒适区");
         assert_eq!(result.recommendation_summary.source_label, "Mock Last.fm");
+        assert_eq!(result.taste_profile.resolved_track_count, 1);
+        assert_eq!(result.taste_profile.top_artists[0].name, "Source Artist");
+        assert_eq!(result.taste_profile.top_albums[0].name, "Source Album");
         assert!(result.recommendations.iter().all(|item| !matches!(
             item.track.title.as_str(),
             "Clair de Lune" | "Blue in Green" | "First Love"
